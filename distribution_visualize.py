@@ -51,7 +51,7 @@ def get_image_token_slice(obj: dict, hidden_state: torch.Tensor) -> slice:
             f"Invalid image-token range [{image_start}, {image_end}) for "
             f"num_valid_tokens={num_valid_tokens} and num_image_tokens={num_image_tokens}."
         )
-
+ 
     return slice(image_start, image_end)
 
 
