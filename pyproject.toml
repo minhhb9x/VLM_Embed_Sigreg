@@ -1,5 +1,5 @@
 [project]
-name = "talas-vlm-embed"
+name = "vlm"
 version = "0.1.0"
 description = "VLM embedding training and evaluation scripts."
 readme = "README.md"
