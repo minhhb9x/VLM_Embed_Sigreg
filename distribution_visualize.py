@@ -8,24 +8,24 @@ import matplotlib
 matplotlib.use("Agg")  # Chạy trên server không có màn hình
 import matplotlib.pyplot as plt
 
-def compute_effective_rank(
-    hidden_state: torch.Tensor,
-    eps: float = 1e-10,
-    normalize_by_min_dim: bool = False,
-) -> torch.Tensor:
-    x = hidden_state.float()
-    n, d = x.shape
+# def compute_effective_rank(
+#     hidden_state: torch.Tensor,
+#     eps: float = 1e-10,
+#     normalize_by_min_dim: bool = False,
+# ) -> torch.Tensor:
+#     x = hidden_state.float()
+#     n, d = x.shape
 
-    s = torch.linalg.svdvals(x) / torch.sqrt(torch.tensor(n, device=x.device, dtype=x.dtype))
-    eigvals = s.square()
-    prob = eigvals.clamp_min(eps) / eigvals.sum().clamp_min(eps)
-    entropy = -(prob * torch.log(prob)).sum()
+#     s = torch.linalg.svdvals(x) / torch.sqrt(torch.tensor(n, device=x.device, dtype=x.dtype))
+#     eigvals = s.square()
+#     prob = eigvals.clamp_min(eps) / eigvals.sum().clamp_min(eps)
+#     entropy = -(prob * torch.log(prob)).sum()
 
-    erank = torch.exp(entropy)
-    if normalize_by_min_dim:
-        erank = erank / min(n, d)
+#     erank = torch.exp(entropy)
+#     if normalize_by_min_dim:
+#         erank = erank / min(n, d)
 
-    return erank
+#     return erank
 
 
 def get_image_token_slice(obj: dict, hidden_state: torch.Tensor) -> slice:
