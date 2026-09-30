@@ -47,7 +47,7 @@ torchrun --standalone \
     --warmup_ratio 0.03 \
     --kd_weight 1 \
     --kd_loss_type "pga" \
-    --image_resolution "low" \
+    --image_resolution "tiny" \
     --projector_lr 5e-4 \
     --projector_config_path "./config/projector_config.json" \
 
