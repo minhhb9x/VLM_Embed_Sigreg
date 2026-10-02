@@ -35,6 +35,7 @@ from .em_sigreg_kd_loss import EMSigRegKDLoss
 from .span_attn_sigreg import SpanSigregCriterionWeighted
 from .pga import PGA
 from .qwen3_pga import Qwen3PGA
+from .vis_cosine_reg import VisCosineReg
 
 criterion_list = {
     "contrastive": ContrastiveLoss,
@@ -75,6 +76,7 @@ criterion_list = {
     "span_attn_sigreg_kd": SpanSigregCriterionWeighted,
     "pga": PGA,
     "qwen3_pga": Qwen3PGA,
+    "vis_cosine_reg": VisCosineReg,
 }
 
 def build_criterion(args):

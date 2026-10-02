@@ -141,7 +141,7 @@ def get_pt_files(pt_dir: str, num_samples: int) -> list[str]:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pt_dir", default="infer/rkd_meta_cls/ImageNet-1K/query")
-    parser.add_argument("--num_samples", type=int, default=50, help="Number of first .pt files to use. Use <= 0 to process all files.")
+    parser.add_argument("--num_samples", type=int, default=0, help="Number of first .pt files to use. Use <= 0 to process all files.")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--normalize", action="store_true", help="L2-normalize image/text tokens along hidden dimension before eRank.")
     parser.add_argument(

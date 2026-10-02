@@ -27,6 +27,7 @@ from transformers.integrations import HfDeepSpeedConfig
 
 import random
 import numpy as np
+import itertools
 
 def seed_everything(seed: int, rank: int = 0):
     seed = seed + rank  # quan trọng trong DDP
@@ -324,9 +325,6 @@ def main():
         if "mm_projector" in n or "multi_modal_projector" in n:
             p.requires_grad = True
             
-        if "mm_projector" in n or "multi_modal_projector" in n:
-            p.requires_grad = True
-            
         if "lm_head" in n:
             p.requires_grad = False
         if p.requires_grad:
@@ -334,8 +332,14 @@ def main():
             num_trainable_vision += p.numel()
     print_rank(f"Number of trainable vision parameters: {num_trainable_vision}")
     
-    optimizer = AdamW(
+    criterion = build_criterion(training_args)
+    trainable_params = itertools.chain(
         distiller.student.parameters(),
+        criterion.parameters()
+    )
+    
+    optimizer = AdamW(
+        trainable_params,
         lr=training_args.learning_rate,
         weight_decay=training_args.weight_decay,
         betas=(0.9, 0.999),
@@ -369,7 +373,7 @@ def main():
             optimizer,
             num_warmup_steps=training_args.warmup_ratio * total_steps,
         )
-    criterion = build_criterion(training_args)
+    
     trainer = Trainer(distiller, train_dataloader, optimizer, lr_scheduler, criterion, 
                       model_args, training_args, data_args)
     trainer.train()

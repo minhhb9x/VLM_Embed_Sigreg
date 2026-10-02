@@ -9,7 +9,7 @@ TRAIN_SCRIPT="train_ddp.py"
 # =========================================================================
 # Dùng torchrun để khởi chạy
 # =========================================================================
-torchrun --standalone \
+torchrun --master_addr=127.0.0.1 --master_port=29511 \
     --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --model_name apple/FastVLM-0.5B \
     --teacher_model_name "raghavlite/B3_Qwen2_2B" \
@@ -27,7 +27,7 @@ torchrun --standalone \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
     --percent_data 1.0 \
-    --output_dir "training/FastVLM-0.5B_talas_jepa_vqa" \
+    --output_dir "training/FastVLM-0.5B_jepa_vqa" \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 1 \
     --learning_rate 1e-4 \
@@ -39,7 +39,6 @@ torchrun --standalone \
     --seed 42 \
     --weight_decay 0.01 \
     --normalize True \
-    --teacher_normalize True \
     --lr_scheduler_type "constant" \
     --warmup_ratio 0.05 \
     --kd_weight 1.0 \
@@ -47,6 +46,12 @@ torchrun --standalone \
     --kd_loss_type "talas_jepa" \
     --image_resolution "low" \
     --projector_config_path "./config/projector_config_emo.json" \
-    --num_self_kd_layers 3 \
+    --use_sigreg_loss True \
+    --sigreg_weight 1.0 \
     --projector_lr 5e-5 \
     --report_to None
+
+SUBSETS=(
+  "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W"
+  "ScienceQA" "VizWiz" "GQA" "TextVQA"
+)

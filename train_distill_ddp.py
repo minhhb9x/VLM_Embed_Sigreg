@@ -376,8 +376,14 @@ def main():
             num_trainable_vision += p.numel()
     print_rank(f"Number of trainable vision parameters: {num_trainable_vision}")
     
-    optimizer = AdamW(
+    criterion = build_criterion(training_args)
+    trainable_params = itertools.chain(
         distiller.student.parameters(),
+        criterion.parameters()
+    )
+
+    optimizer = AdamW(
+        trainable_params,
         lr=training_args.learning_rate,
         weight_decay=training_args.weight_decay,
         betas=(0.9, 0.999),
@@ -411,7 +417,7 @@ def main():
             optimizer,
             num_warmup_steps=training_args.warmup_ratio * total_steps,
         )
-    criterion = build_criterion(training_args)
+
     trainer = Trainer(distiller, train_dataloader, optimizer, lr_scheduler, criterion, 
                       model_args, training_args, data_args)
     trainer.train()

@@ -6,7 +6,8 @@ from src.criterions.utils import count_clean_text_tokens, get_hidden_text_vision
 import random
 import math
 from torch.nn.utils.rnn import pad_sequence
-
+from torch.distributed.nn.functional import all_reduce as grad_all_reduce
+from scipy.optimize import linear_sum_assignment
 
 class TalasJepa(nn.Module):
     def __init__(self, args):
@@ -22,6 +23,8 @@ class TalasJepa(nn.Module):
 
         self.counter = 0
         self.warm_up_sigreg = 0
+
+        self.centroids = nn.Parameter(torch.randn(args.num_centroids, args.centroid_hidden_size))
     
     def _dist_gather_tensor(self, t: torch.Tensor):
         t = t.contiguous()
@@ -80,7 +83,7 @@ class TalasJepa(nn.Module):
 
         return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean",)
     
-    def sigreg(self, x: torch.Tensor, num_slices: int = 128) -> torch.Tensor:
+    def sigreg(self, x: torch.Tensor, num_slices: int = 256) -> torch.Tensor:
         device = x.device
         # =====================================================
         # 1. Random projection seed
@@ -142,182 +145,107 @@ class TalasJepa(nn.Module):
 
         return sigreg_per_slice.mean()
 
+    def kd_sigreg(
+        self,
+        student_x: torch.Tensor,
+        teacher_x: torch.Tensor,
+        num_slices: int = 256,
+        num_t: int = 17,
+        t_max: float = 5.0,
+    ) -> torch.Tensor:
+        if student_x.ndim != 2 or teacher_x.ndim != 2:
+            raise ValueError("student_x và teacher_x phải có shape [N, D]")
+        if student_x.size(0) != teacher_x.size(0):
+            raise ValueError("Student và teacher phải có cùng số mẫu")
+        if student_x.device != teacher_x.device:
+            raise ValueError("Student và teacher phải ở cùng device")
 
-    def sketched_participation_ratio_erank(self, z_list_first: list[torch.Tensor], 
-                                           z_list_last: list[torch.Tensor],
-                                           num_slices: int = 256, 
-                                           min_valid_tokens: int = 4, eps: float = 1e-8):
- 
-        B = len(z_list_last)
-        if B == 0:
-            return 0.0
+        device = student_x.device
+        distributed = self.world_size > 1
 
-        device, dtype = z_list_last[0].device, z_list_last[0].dtype
-        D = z_list_last[0].shape[-1]
+        projection_seed = random.randint(0, 2**63 - 1) if self.process_rank == 0 else 0
+        if distributed:
+            seed_tensor = torch.tensor(projection_seed, dtype=torch.int64, device=device)
+            dist.broadcast(seed_tensor, src=0)
+            projection_seed = int(seed_tensor.item())
 
-        def _pad_and_mask(z_list):
-            lengths = torch.tensor([x.size(0) for x in z_list], device=device)
-            z_padded = pad_sequence(z_list, batch_first=True, padding_value=0.0)
-            N_max = z_padded.size(1)
-            idx = torch.arange(N_max, device=device).unsqueeze(0)
-            mask = idx < lengths.unsqueeze(1)
-            return z_padded, mask, lengths
+        generator = torch.Generator(device=device)
+        generator.manual_seed(projection_seed)
 
-        z0_padded, mask0, len0 = _pad_and_mask(z_list_first)
-        zL_padded, maskL, lenL = _pad_and_mask(z_list_last)
+        # Tính phép chiếu và ECF bằng float32 ngay cả khi model chạy bf16.
+        with torch.autocast(device_type=device.type, enabled=False):
+            A = torch.randn(student_x.size(1), num_slices, generator=generator,
+                            device=device, dtype=torch.float32)
+            A = A / A.norm(dim=0, keepdim=True).clamp_min(1e-12)
 
-        z0_padded = z0_padded.detach().float()
-        zL_padded = zL_padded.float()
+            B = torch.randn(teacher_x.size(1), num_slices, generator=generator,
+                            device=device, dtype=torch.float32)
+            B = B / B.norm(dim=0, keepdim=True).clamp_min(1e-12)
 
-        A = torch.randn(D, num_slices, device=device, dtype=torch.float32)
-        A = A / A.norm(p=2, dim=0, keepdim=True).clamp_min(eps)   # [D, M]
+            student_proj = student_x.float() @ A
+            teacher_proj = teacher_x.float() @ B
+            t = torch.linspace(-t_max, t_max, num_t, device=device, dtype=torch.float32)
 
-        def _participation_ratio(z_padded, mask, lengths):
-            mask_f = mask.unsqueeze(-1).float()                                        # [B, N_max, 1]
-            n_valid = lengths.clamp(min=2).float()                                     # [B]
+            student_phase = student_proj.unsqueeze(-1) * t
+            student_sum = torch.stack(
+                [student_phase.cos().sum(dim=0), student_phase.sin().sum(dim=0)],
+                dim=-1,
+            )
+            
+            teacher_phase = teacher_proj.unsqueeze(-1) * t
+            teacher_sum = torch.stack(
+                [teacher_phase.cos().sum(dim=0), teacher_phase.sin().sum(dim=0)],
+                dim=-1,
+            )
 
-            # Center (giống bước 0 cũ) — bắt buộc để proj mang đúng ý nghĩa "centered"
-            mean = (z_padded * mask_f).sum(dim=1, keepdim=True) / n_valid.view(-1, 1, 1)
-            z_c = (z_padded - mean) * mask_f                                           # [B, N_max, D], padding = 0
+            count = torch.tensor(student_x.size(0), device=device, dtype=torch.float32)
+            if distributed:
+                student_sum = grad_all_reduce(student_sum, op=dist.ReduceOp.SUM)
+                with torch.no_grad():
+                    dist.all_reduce(teacher_sum, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(count, op=dist.ReduceOp.SUM)
 
-            # --- Bậc 1: trace(Cov) — CHÍNH XÁC như code cũ ---
-            proj = z_c @ A                                                             # [B, N_max, M]
-            var_proj = (proj ** 2).sum(dim=1) / (n_valid - 1.0).unsqueeze(-1)          # [B, M] = a^T Cov a
-            trace1 = D * var_proj.mean(dim=-1)                                         # [B]  ≈ trace(Cov)
+            student_ecf = student_sum / count  # [M, T, 2]
+            teacher_ecf = teacher_sum / count  # [M, T, 2]
 
-            # --- Bậc 2: trace(Cov^2) — THÊM MỘT MATMUL, KHÔNG LẶP ---
-            # Cov @ a_m  =  Z_c^T @ (Z_c @ a_m) / (n-1)   với mỗi m cùng lúc:
-            Cov_A = torch.bmm(z_c.transpose(1, 2), proj) / (n_valid - 1.0).view(-1, 1, 1)  # [B, D, M]
-            term2 = (Cov_A ** 2).sum(dim=1)                                            # [B, M] = a^T Cov^2 a
-            trace2 = D * term2.mean(dim=-1)                                            # [B]  ≈ trace(Cov^2)
+            weight = torch.exp(-0.5 * t.square())
+            sqrt_weight = (weight / weight.sum()).sqrt()
+            student_feat = (student_ecf * sqrt_weight[None, :, None]).reshape(num_slices, -1)
+            teacher_feat = (teacher_ecf * sqrt_weight[None, :, None]).reshape(num_slices, -1)
 
-            pr = trace1.pow(2) / trace2.clamp_min(eps)                                 # [B]  participation ratio
-            valid = lengths >= min_valid_tokens
-            return pr, valid
+            cost = torch.cdist(student_feat, teacher_feat, p=2).square()  # [M, M]
 
-        # def _rms_norm(x, weight=None, eps=1e-8):
-        #     rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
-        #     out = x / rms
-        #     return out
+            # Chọn phép ghép 1–1 có tổng cost nhỏ nhất.
+            with torch.no_grad():
+                row_np, col_np = linear_sum_assignment(cost.detach().cpu().numpy())
 
-        # z0_normed = _rms_norm(z0_padded)
-        # zL_normed = _rms_norm(zL_padded)
-        z0_normed = z0_padded
-        zL_normed = zL_padded
+            row = torch.as_tensor(row_np, device=device, dtype=torch.long)
+            col = torch.as_tensor(col_np, device=device, dtype=torch.long)
 
-        pr0, valid0 = _participation_ratio(z0_normed, mask0, len0)
-        prL, validL = _participation_ratio(zL_normed, maskL, lenL)
+            return count * cost[row, col].mean()
 
-        valid = valid0 & validL
-        if not valid.any():
-            return zL_padded.sum() * 0.0
 
-        # print("pr0:", pr0)
-        # print("prL:", prL)
-        # def compute_effective_rank(
-        #     hidden_state: torch.Tensor, # [N, D]
-        #     eps: float = 1e-10,
-        # ) -> torch.Tensor:
-        #     X = hidden_state.float() 
-        #     N = X.size(0)
-        #     s = torch.linalg.svdvals(X) / torch.sqrt(torch.tensor(N))
-        #     eigvals = s * s
-        #     prob = eigvals.clamp(min=eps) / eigvals.sum()
-        #     entropy = -(prob * torch.log(prob)).sum()
-        #     effective_rank = torch.exp(entropy)
-        #     return effective_rank.to(dtype=hidden_state.dtype)
-        # for hs0, hsL in zip(z_list_first, z_list_last):
-        #     e0 = compute_effective_rank(hs0)
-        #     el = compute_effective_rank(hsL)
-        #     print(f"er_hs0: {e0}, er_hs1: {el}, 0-l: {e0-el}")
-
-        loss_per_sample = F.relu(pr0 - prL)
-        # print("loss_per_sample:", loss_per_sample)
-
-        return loss_per_sample[valid].mean().to(dtype)
+    def mi_loss(
+            self,
+            student_features: torch.Tensor,  # [B, D]
+            teacher_features: torch.Tensor,  # [B, D]
+            temperature: float = 0.02,
+        ) -> torch.Tensor:
+            """Equation (13) của PGA-KD: student_i khớp teacher_i."""
+            if student_features.ndim != 2 or student_features.shape != teacher_features.shape:
+                raise ValueError("student_features và teacher_features phải cùng shape [B, D]")
+            if temperature <= 0:
+                raise ValueError("temperature phải > 0")
     
-    def sketched_std_erank(self, z_list_first: list[torch.Tensor], z_list_last: list[torch.Tensor],
-                                num_slices: int = 256, min_valid_tokens: int = 4, eps: float = 1e-8):
+            student = F.normalize(student_features.float(), dim=-1)
+            teacher = F.normalize(teacher_features.float(), dim=-1)
+    
+            # logits[i, j] = cosine(student_i, teacher_j) / temperature
+            logits = student @ teacher.T / temperature  # [B, B]
+            labels = torch.arange(logits.size(0), device=logits.device)
+    
+            return F.cross_entropy(logits, labels)
 
-        B = len(z_list_last)
-        if B == 0:
-            return 0.0
-
-        device, dtype = z_list_last[0].device, z_list_last[0].dtype
-        D = z_list_last[0].shape[-1]
-        assert z_list_first[0].shape[-1] == D, (
-            f"z_list_first và z_list_last phải cùng chiều D "
-            f"(nhận {z_list_first[0].shape[-1]} và {D}); chiếu qua projector trước nếu khác chiều."
-        )
-
-        # ==========================================
-        # 0. PADDING & MASKING — Xử lý số lượng token không đồng đều
-        # ==========================================
-        def _pad_and_mask(z_list):
-            lengths = torch.tensor([x.size(0) for x in z_list], device=device)
-            z_padded = pad_sequence(z_list, batch_first=True, padding_value=0.0)  # [B, N_max, D]
-            N_max = z_padded.size(1)
-            idx = torch.arange(N_max, device=device).unsqueeze(0)                 # [1, N_max]
-            mask = idx < lengths.unsqueeze(1)                                     # [B, N_max]
-            return z_padded, mask, lengths
-
-        z0_padded, mask0, len0 = _pad_and_mask(z_list_first)
-        zL_padded, maskL, lenL = _pad_and_mask(z_list_last)
-
-        z0_padded = z0_padded.detach().float()
-        zL_padded = zL_padded.float()
-
-        # ==========================================
-        # 1. RANDOM PROJECTIONS — Chiếu xuống M hướng để ước lượng Trace
-        # ==========================================
-        
-        A = torch.randn(D, num_slices, device=device, dtype=torch.float32)
-        A = A / A.norm(p=2, dim=0, keepdim=True).clamp_min(eps)  # [D, M]
-
-        def _projected_variance(z_padded, mask, lengths):
-            mask_f = mask.unsqueeze(-1).to(dtype=torch.float32)                # [B, N_max, 1]
-            n_valid = lengths.clamp(min=2).to(torch.float32)                   # [B]
-
-            proj = z_padded @ A                                                # [B, N_max, M]
-
-            mean_proj = (proj * mask_f).sum(dim=1, keepdim=True) / n_valid.view(-1, 1, 1) # [B, 1, M]
-            centered_proj = (proj - mean_proj) * mask_f                        # [B, N_max, M]
-            var_proj = (centered_proj ** 2).sum(dim=1) / (n_valid - 1.0).unsqueeze(-1)    # [B, M]
-
-            valid = lengths >= min_valid_tokens                                # [B]
-            return var_proj, valid
-
-        var_0, valid_0 = _projected_variance(z0_padded, mask0, len0)
-        var_L, valid_L = _projected_variance(zL_padded, maskL, lenL)
-
-        valid = valid_0 & valid_L
-        if not valid.any():
-            return zL_padded.sum() * 0.0
-
-        # ==========================================
-        # 2. HINGE VARIANCE LOSS — Phạt nếu Erank của Layer L xẹp hơn Layer 0
-        # ==========================================
-        # std_0 = torch.sqrt(var_0 + eps)
-        # std_L = torch.sqrt(var_L + eps)
-        
-        # loss_per_slice = F.relu(std_0 - std_L)              # [B, M]
-        # loss_per_sample = loss_per_slice.mean(dim=1)        # [B]
-        
-        sum_var_0 = var_0.sum(dim=1, keepdim=True).clamp_min(eps)
-        sum_var_L = var_L.sum(dim=1, keepdim=True).clamp_min(eps)
-
-        p_0 = var_0 / sum_var_0  # [B, M]
-        p_L = var_L / sum_var_L  # [B, M]
-
-        # Tính Shannon Entropy (-sum(p * log(p)))
-        entropy_0 = -(p_0 * torch.log(p_0 + eps)).sum(dim=1)  # [B]
-        entropy_L = -(p_L * torch.log(p_L + eps)).sum(dim=1)  # [B]
-
-        # Hinge Loss: Ép độ phân tán năng lượng (Entropy) của Layer L >= Layer 0
-        loss_per_sample = F.relu(entropy_0 - entropy_L)       # [B]
-        # loss_per_sample = (entropy_0 - entropy_L) ** 2
-
-        return loss_per_sample[valid].mean().to(dtype)
 
     def sigreg_dualview(self, z_list: list[torch.Tensor], eos_query: torch.Tensor,
                         num_slices: int = 256, tau: float = 0.05, alpha: float = 0.9):
@@ -381,84 +309,168 @@ class TalasJepa(nn.Module):
         loss_sigreg = torch.trapezoid(err, t, dim=-1).mean(dim=-1) * B
 
         return loss_sigreg.mean()
-
-    def _compute_modality_distill(self, student_hidden_states, image_features, 
-                                  text_token_counts, attention_mask):
-        """
-        Hàm này chỉ còn nhiệm vụ trích xuất text và vision representations 
-        của student, cùng với việc tính toán SIGReg loss.
-        """
-
-        batch_size = attention_mask.size(0)
-        last_layer_idx = len(student_hidden_states) - 1
-        layers = [0, int(last_layer_idx / 2), int(4 * last_layer_idx / 5), last_layer_idx]
-        
-        stu_img_tokens = {l: [] for l in layers}
-        stu_text_reps = []
-        
-        cur_idx_img = 0
-        for i in range(batch_size):
-            num_vision_token = 0
-            if image_features is not None and cur_idx_img < len(image_features):
-                num_vision_token = image_features[cur_idx_img].size(0)
-                cur_idx_img += 1
-            
-            text_last_hidden, img_last_hidden = get_hidden_text_vision(
-                student_hidden_states[last_layer_idx][i],
-                text_token_counts[i].item(),
-                num_vision_token,
-                attention_mask[i]
-            )
-            stu_text_reps.append(text_last_hidden.mean(dim=0))
-            
-            if num_vision_token > 0:
-                for l in layers:
-                    _, img_hidden = get_hidden_text_vision(
-                        student_hidden_states[l][i],
-                        text_token_counts[i].item(),
-                        num_vision_token,
-                        attention_mask[i]
-                    )
-                    stu_img_tokens[l].append(img_hidden)
-
-        # 1. Gom representations của Text
-        stacked_stu_text_reps = torch.stack(stu_text_reps, dim=0)
-
-        # 2. Gom representations của Vision và tính SIGReg
-        stu_img_final_reps = None
-        sigreg_final = 0.0
-
-        NUM_SLICES = 256
-
-        if len(stu_img_tokens[last_layer_idx]) > 0:
-            stu_img_final_reps = torch.stack([x.mean(dim=0) for x in stu_img_tokens[last_layer_idx]], dim=0) 
-
-            warmup_factor = min(1.0, self.counter / max(1, self.warm_up_sigreg))
-            total_sigreg = 0.0
-            sigreg_erank_loss = 0.0
-
-            k_layers = 0
-            for l in layers[1:-1]:
-                k_layers += 1
-                # eos_query = pooling(student_hidden_states[l], attention_mask, 
-                #                     mode='eos', normalize=True).detach()
-                # total_sigreg += self.sigreg_dualview(stu_img_tokens[l], eos_query, 
-                #                                      tau=0.1, alpha=0.9)
-                # total_sigreg += self.sigreg_sinkhorn(stu_img_tokens[l], concept_queries)
-
-                sigreg_erank_loss += self.sketched_participation_ratio_erank(stu_img_tokens[0], 
-                                                                             stu_img_tokens[l],
-                                                                             num_slices=NUM_SLICES)
-
-            if self.args.use_sigreg_loss:
-                sigreg_final = sigreg_erank_loss  / max(1, k_layers)
-
-        return stacked_stu_text_reps, stu_img_final_reps, sigreg_final
     
+
+    def sigreg_sinkhorn(
+        self,
+        z_list: list[torch.Tensor],
+        concept_queries: torch.Tensor,
+        num_slices: int = 256,
+        tau: float = 0.05,
+        n_iters: int = 3,
+    ) -> torch.Tensor:
+        B = len(z_list)
+        if B == 0:
+            raise ValueError("z_list không được rỗng")
+        if tau <= 0 or n_iters < 1:
+            raise ValueError("Cần tau > 0 và n_iters >= 1")
+
+        K, D = concept_queries.shape
+        device = z_list[0].device
+        if self.centroids.device != device:
+            self.centroids.data = self.centroids.data.to(device)
+        lengths = torch.tensor([z.size(0) for z in z_list], device=device)
+
+        if K == 0 or (lengths == 0).any():
+            raise ValueError("Cần ít nhất một concept và một image token mỗi ảnh")
+        if any(z.ndim != 2 or z.size(1) != D for z in z_list):
+            raise ValueError("Mỗi phần tử z_list phải có shape [N_i, D]")
+
+        distributed = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+
+        with torch.autocast(device_type=device.type, enabled=False):
+            z_padded = pad_sequence(z_list, batch_first=True, padding_value=0).float()
+            N_max = z_padded.size(1)
+            valid = torch.arange(N_max, device=device)[None, :] < lengths[:, None]
+
+            # Normalize chỉ để tính cosine cost, không thay token dùng để tạo centroid.
+            q = F.normalize(concept_queries.float(), dim=-1)
+            z_for_cost = F.normalize(z_padded, dim=-1)
+            cost = 1 - torch.einsum("kd,bnd->bkn", q, z_for_cost)
+
+            neg_large = -1e9
+            log_kernel = (-cost / tau).masked_fill(~valid[:, None, :], neg_large)
+            log_u = torch.zeros(B, K, device=device)
+            log_v = torch.zeros(B, N_max, device=device).masked_fill(~valid, neg_large)
+            log_token_mass = -lengths.float().log()
+
+            # Giữ gradient qua Sinkhorn để concept_queries có thể học.
+            for _ in range(n_iters):
+                log_u = -math.log(K) - torch.logsumexp(
+                    log_kernel + log_v[:, None, :], dim=2
+                )
+                next_log_v = log_token_mass[:, None] - torch.logsumexp(
+                    log_kernel + log_u[:, :, None], dim=1
+                )
+                log_v = next_log_v.masked_fill(~valid, neg_large)
+
+            log_plan = log_kernel + log_u[:, :, None] + log_v[:, None, :]
+            plan = log_plan.masked_fill(~valid[:, None, :], neg_large).exp()
+            weights = plan / plan.sum(dim=2, keepdim=True).clamp_min(1e-12)
+            z_centroids = torch.bmm(weights, z_padded)  # [B, K, D]
+
+            # Không L2-normalize centroid, không thêm noise.
+            x = z_centroids.reshape(B * K, D)         # [B*K, D]
+
+            # Cùng hướng chiếu trên các GPU nếu dùng DDP.
+            seed = random.randint(0, 2**63 - 1) if not distributed or dist.get_rank() == 0 else 0
+            if distributed:
+                seed_tensor = torch.tensor(seed, device=device, dtype=torch.int64)
+                dist.broadcast(seed_tensor, src=0)
+                seed = int(seed_tensor.item())
+
+            generator = torch.Generator(device=device)
+            generator.manual_seed(seed)
+            A = torch.randn(D, num_slices, generator=generator, device=device, dtype=torch.float32)
+            A = A / A.norm(dim=0, keepdim=True).clamp_min(1e-12)
+
+            t = torch.linspace(-5, 5, 17, device=device, dtype=torch.float32)
+            target_cf = torch.exp(-0.5 * t.square())
+
+            phase = (x @ A).unsqueeze(-1) * t         # [B*K, M, 17]
+            ecf_sum = torch.stack(
+                [phase.cos().sum(dim=0), phase.sin().sum(dim=0)],
+                dim=-1,
+            )                                         # [M, 17, 2]
+
+            image_count = torch.tensor(B, device=device, dtype=torch.float32)
+            if distributed:
+                ecf_sum = grad_all_reduce(ecf_sum, op=dist.ReduceOp.SUM)
+                dist.all_reduce(image_count, op=dist.ReduceOp.SUM)
+
+            ecf = ecf_sum / (image_count * K)
+            err = (
+                (ecf[..., 0] - target_cf).square() + ecf[..., 1].square()
+            ) * target_cf
+
+            return torch.trapezoid(err, t, dim=1).mean() * image_count
+    
+    def get_image_hidden_states(self, student_tokenizer, 
+                                student_qry_input,
+                                student_pos_input,
+                                student_qry_output, 
+                                student_pos_output):
+        student_qry_reps, student_qry_image_features, student_qry_attention, student_qry_hidden_states = student_qry_output
+        student_pos_reps, student_pos_image_features, student_pos_attention, student_pos_hidden_states = student_pos_output
+
+        student_special_ids = torch.tensor(
+            list(set(list(student_tokenizer.added_tokens_encoder.values()) + student_tokenizer.all_special_ids) 
+                    - set([student_tokenizer.eos_token_id])),
+            device=student_qry_reps.device,
+            dtype=torch.long
+        )
+
+        num_student_text_qry_tokens = count_clean_text_tokens(student_qry_input, student_special_ids)
+        num_student_text_pos_tokens = count_clean_text_tokens(student_pos_input, student_special_ids)
+
+
+        selected_layer = self.args.num_layers
+
+        batch_size = student_qry_reps.size(0)
+        
+        vision_hidden_states = []
+        cur_idx_qry_img = 0
+        cur_idx_pos_img = 0
+        for i in range(batch_size):
+            # 1. QUERY Processing
+            if student_qry_image_features is not None:
+                if cur_idx_qry_img < len(student_qry_image_features):
+                    # --- Vision ---
+                    stu_feat = student_qry_image_features[cur_idx_qry_img]
+                    
+                    stu_text_hidden_state, vision_hidden_state = get_hidden_text_vision(
+                        student_qry_hidden_states[selected_layer][i],
+                        num_student_text_qry_tokens[i].item(),
+                        stu_feat.size(0),
+                        student_qry_input['attention_mask'][i]
+                    )
+                    vision_hidden_states.append(vision_hidden_state)
+                    cur_idx_qry_img += 1
+
+            # 2. POSITIVE Processing (Tương tự Query)
+            if student_pos_image_features is not None:
+                if cur_idx_pos_img < len(student_pos_image_features):
+                    # --- Vision ---
+                    stu_feat_pos = student_pos_image_features[cur_idx_pos_img]
+
+                    stu_text_hidden_state, vision_hidden_state = get_hidden_text_vision(
+                        student_pos_hidden_states[selected_layer][i],
+                        num_student_text_pos_tokens[i].item(),
+                        stu_feat_pos.size(0),
+                        student_pos_input['attention_mask'][i]
+                    )
+                    vision_hidden_states.append(vision_hidden_state)
+                    cur_idx_pos_img += 1
+
+        return vision_hidden_states
+
+
+
     def forward(self, model_wrapper, input_data):
         student_model = model_wrapper.model
         student_processor = model_wrapper.get_processor()
         student_tokenizer = student_processor.tokenizer 
+        projectors = model_wrapper.projectors
 
         student_qry_input = input_data['qry']
         student_pos_input = input_data['pos']
@@ -490,6 +502,8 @@ class TalasJepa(nn.Module):
             all_student_pos_reps = self._dist_gather_tensor(student_pos_reps)
             all_teacher_qry_reps = self._dist_gather_tensor(teacher_qry_reps)
             all_teacher_pos_reps = self._dist_gather_tensor(teacher_pos_reps)
+            student_qry_hidden_states = [self._dist_gather_tensor(h) for h in student_qry_hidden_states]
+            student_pos_hidden_states = [self._dist_gather_tensor(h) for h in student_pos_hidden_states]
         else:
             all_student_qry_reps = student_qry_reps
             all_student_pos_reps = student_pos_reps
@@ -502,102 +516,53 @@ class TalasJepa(nn.Module):
         target = target * (all_student_qry_reps.size(0) // all_student_pos_reps.size(0))
         contrastive_loss = nn.CrossEntropyLoss()(scores / model_wrapper.temperature, target)
 
-        kd_simcse = 0.0
-        last_stu_qry_hidden_state = pooling(student_qry_hidden_states[-1], 
-                                            student_qry_input['attention_mask'], 
-                                            mode='eos', normalize=True)
-        last_stu_pos_hidden_state = pooling(student_pos_hidden_states[-1], 
-                                            student_pos_input['attention_mask'], 
-                                            mode='eos', normalize=True)
         
-        kd_simcse += self.distillcse_kd_loss(last_stu_qry_hidden_state, 
-                                             last_stu_pos_hidden_state, 
-                                             teacher_qry_reps, teacher_pos_reps, 
-                                             tau=self.args.d_cse_temperature)
-
-        # all_stu_reps = torch.cat([last_stu_qry_hidden_state, last_stu_pos_hidden_state], dim=0)
-        # all_tea_reps = torch.cat([teacher_qry_reps, teacher_pos_reps], dim=0)
-        # kd_simcse += self.structure_loss(all_stu_reps, all_tea_reps) / self.args.d_cse_temperature
-
         ##################################
-        student_special_ids = torch.tensor(
-            list(set(list(student_tokenizer.added_tokens_encoder.values()) + student_tokenizer.all_special_ids) 
-                 - set([student_tokenizer.eos_token_id])),
-            device=student_qry_input['input_ids'].device,
-            dtype=torch.long
-        )
+        # student_special_ids = torch.tensor(
+        #     list(set(list(student_tokenizer.added_tokens_encoder.values()) + student_tokenizer.all_special_ids) 
+        #          - set([student_tokenizer.eos_token_id])),
+        #     device=student_qry_input['input_ids'].device,
+        #     dtype=torch.long
+        # )
 
-        num_student_text_qry_tokens = count_clean_text_tokens(student_qry_input, student_special_ids)
-        num_student_text_pos_tokens = count_clean_text_tokens(student_pos_input, student_special_ids)
+        # num_student_text_qry_tokens = count_clean_text_tokens(student_qry_input, student_special_ids)
+        # num_student_text_pos_tokens = count_clean_text_tokens(student_pos_input, student_special_ids)
 
-        # Trích xuất Representations từ QRY
-        qry_stu_txt, qry_stu_img, qry_sigreg = self._compute_modality_distill(
-            student_hidden_states=student_qry_hidden_states, 
-            image_features=student_qry_image_features,
-            text_token_counts=num_student_text_qry_tokens, 
-            attention_mask=student_qry_input['attention_mask'], 
-        )
-
-        # Trích xuất Representations từ POS
-        pos_stu_txt, pos_stu_img, pos_sigreg = self._compute_modality_distill(
-            student_hidden_states=student_pos_hidden_states, 
-            image_features=student_pos_image_features,
-            text_token_counts=num_student_text_pos_tokens, 
-            attention_mask=student_pos_input['attention_mask'], 
-        )
-
-        stu_modality_features = []
-        tea_modality_features = []
-        SIGReg = torch.zeros_like(contrastive_loss)
-        num_sigreg_components = 0
-
-        if tea_text_qry_reps is not None:
-            stu_modality_features.append(qry_stu_txt)
-            tea_modality_features.append(tea_text_qry_reps)
-        if tea_text_pos_reps is not None:
-            stu_modality_features.append(pos_stu_txt)
-            tea_modality_features.append(tea_text_pos_reps)
-
-        if tea_img_qry_reps is not None and qry_stu_img is not None:
-            stu_modality_features.append(qry_stu_img)
-            tea_modality_features.append(tea_img_qry_reps)
-            SIGReg += qry_sigreg
-            num_sigreg_components += 1
-
-        if tea_img_pos_reps is not None and pos_stu_img is not None:
-            stu_modality_features.append(pos_stu_img)
-            tea_modality_features.append(tea_img_pos_reps)
-            SIGReg += pos_sigreg
-            num_sigreg_components += 1
-
-        if num_sigreg_components > 0:
-            SIGReg = SIGReg / num_sigreg_components
-
-        modality_loss = torch.zeros_like(contrastive_loss)
-        if len(stu_modality_features) > 0:
-            all_stu_modality = torch.cat(stu_modality_features, dim=0)
-            all_tea_modality = torch.cat(tea_modality_features, dim=0)
-            modality_loss = self.structure_loss(all_stu_modality, all_tea_modality)
 
         # ==============================================================
 
-        loss_distill = torch.zeros_like(contrastive_loss)
-        if self.args.use_distill_cse_loss:
-            loss_distill += kd_simcse
-            
-        if self.args.use_distill_vison_loss:
-            loss_distill += modality_loss
-
-        loss = contrastive_loss 
+        kd_loss = torch.zeros_like(contrastive_loss)
         if self.args.use_distill_loss:
-            loss = loss + self.kd_weight * loss_distill
-        if self.args.use_sigreg_loss:
-            loss = loss + self.args.sigreg_weight * SIGReg
+            
+            unnorm_student_qry_reps = pooling(student_qry_hidden_states[-1], student_qry_input['attention_mask'], mode='eos', normalize=False)
+            unnorm_student_pos_reps = pooling(student_pos_hidden_states[-1], student_pos_input['attention_mask'], mode='eos', normalize=False)
+            student_rkd_reps = torch.cat([unnorm_student_qry_reps, unnorm_student_pos_reps], dim=0)
+            teacher_rkd_reps = torch.cat([all_teacher_qry_reps, all_teacher_pos_reps], dim=0)
 
+            kd_loss = self.structure_loss(student_rkd_reps, teacher_rkd_reps)
+            # print(f'structure_loss: {kd_loss.item()}')
+
+        sigreg_loss = torch.zeros_like(contrastive_loss)       
+        if self.args.use_sigreg_loss:
+
+            vision_hidden_states = self.get_image_hidden_states(
+                                student_tokenizer, 
+                                student_qry_input,
+                                student_pos_input,
+                                student_qry_output, 
+                                student_pos_output)
+            sigreg_loss = self.sigreg_sinkhorn(vision_hidden_states, 
+                self.centroids, num_slices=256, tau=0.05, n_iters=3)
+
+            # print(f'sigreg_loss: {sigreg_loss.item()}')
+
+
+        # overall loss
+        loss = contrastive_loss + self.kd_weight * kd_loss + self.args.sigreg_weight * sigreg_loss
+        
         return {
             'loss': loss,
             'contrastive_loss': contrastive_loss,
-            'kd_loss': loss_distill,
-            'kd_loss_simcse': kd_simcse,
-            'sigreg_loss': SIGReg
+            'kd_loss': kd_loss,
+            'sigreg_loss': sigreg_loss,
         }

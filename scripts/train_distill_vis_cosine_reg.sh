@@ -10,23 +10,9 @@ TRAIN_SCRIPT="train_ddp.py"
 # Dùng torchrun để khởi chạy
 # =========================================================================
 
-USE_DISTILL_LOSS=${1:-True}
-
-USE_SIGREG_LOSS=${2:-True}
-
-KD_WEIGHT=${3:-1}
-
-SIGREG_WEIGHT=${4:-0.05}
-
-NUM_CENTROIDS=${5:-8}
-
-NUM_LAYER=${6:-1}
-
-PORT=${7:-29511}
-
-# ============================================================
-# Convert True/False -> 1/0 cho tên folder
-# ============================================================
+KD_WEIGHT=${1:-0.1}
+NUM_LAYER=${2:-23}
+PORT=${3:-29521}
 
 bool_to_python() {
     case "$1" in
@@ -58,40 +44,16 @@ bool_to_int() {
     esac
 }
 
-
-# Python values
-DISTILL_LOSS_BOOL=$(bool_to_python "$USE_DISTILL_LOSS")
-SIGREG_BOOL=$(bool_to_python "$USE_SIGREG_LOSS")
-
-# Folder values
-D_DISTILL=$(bool_to_int "$USE_DISTILL_LOSS")
-D_SIGREG=$(bool_to_int "$USE_SIGREG_LOSS")
-
-# ============================================================
-# Tên experiment
-# ============================================================
-
-# EXP_NAME="cosine_jepa_d${D_DISTILL}_cse${D_CSE}_vis${D_VISION}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}_dt${D_TAU}"
-EXP_NAME="struct_vis-sigregot_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_cen_${NUM_CENTROIDS}_l${NUM_LAYER}"
-
-OUTPUT_DIR="training/FastVLM-0.5B_cls_${EXP_NAME}"
-CACHE_DIR="caching/B3_Qwen2_2B_cls"
-
 echo "============================================================"
 echo "Experiment:"
-echo "  USE_DISTILL_LOSS      = $USE_DISTILL_LOSS"
-echo "  USE_SIGREG_LOSS       = $USE_SIGREG_LOSS"
-echo "  KD_WEIGHT             = $KD_WEIGHT"
-echo "  SIGREG_WEIGHT         = $SIGREG_WEIGHT"
-echo "  NUM_CENTROIDS         = $NUM_CENTROIDS"
-echo "  NUM_LAYER             = $NUM_LAYER"
-echo ""
-echo "OUTPUT_DIR:"
-echo "  $OUTPUT_DIR"
+echo "  KD_WEIGHT: $KD_WEIGHT"
+echo "  NUM_LAYER: $NUM_LAYER"
 echo "============================================================"
 
-torchrun  \
-    --master_addr=127.0.0.1 --master_port=$PORT \
+EXP_NAME="vis_cosine_reg_kd${KD_WEIGHT}_l${NUM_LAYER}"
+OUTPUT_MODEL="training/FastVLM-0.5B_cls_${EXP_NAME}"
+
+torchrun --master_addr=127.0.0.1 --master_port=$PORT \
     --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --model_name apple/FastVLM-0.5B \
     --lora True \
@@ -105,7 +67,7 @@ torchrun  \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
     --percent_data 1.0 \
-    --output_dir "$OUTPUT_DIR" \
+    --output_dir $OUTPUT_MODEL \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 1 \
     --learning_rate 1e-4 \
@@ -117,23 +79,16 @@ torchrun  \
     --seed 42 \
     --weight_decay 0.01 \
     --normalize True \
+    --teacher_normalize True \
     --lr_scheduler_type "constant" \
     --warmup_ratio 0.05 \
-    --kd_weight 1.0 \
+    --kd_weight $KD_WEIGHT \
     --caching_dir "caching/B3_Qwen2_2B_cls" \
-    --kd_loss_type "talas_jepa" \
+    --kd_loss_type "vis_cosine_reg" \
     --image_resolution "low" \
-    --projector_config_path "./config/projector_config_emo.json" \
-    --sigreg_weight 0.05 \
-    --kd_weight 1.0 \
+    --num_layers $NUM_LAYER \
     --projector_lr 5e-5 \
-    --report_to None \
-    --use_distill_loss "$DISTILL_LOSS_BOOL" \
-    --use_sigreg_loss "$SIGREG_BOOL" \
-    --kd_weight "$KD_WEIGHT" \
-    --sigreg_weight "$SIGREG_WEIGHT" \
-    --num_centroids "$NUM_CENTROIDS" \
-    --num_layers "$NUM_LAYER" 
+    --report_to None
 
 
 # ============================================================

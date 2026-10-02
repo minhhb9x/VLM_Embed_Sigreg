@@ -126,6 +126,9 @@ class TrainingArguments(TrainingArguments):
         metadata={"help": "List of split layers for student; number of elements equals number of projectors"}   
     )
     w_cross_modal_loss: float = field(default=1.0, metadata={"help": "weight for cross modal loss"})
+    
+    num_centroids: int = field(default=8, metadata={"help": "Number of centroids for distillation"})
+    centroid_hidden_size: int = field(default=896, metadata={"help": "Hidden size for centroids in distillation"})
 
     use_distill_loss: bool = field(default=True, metadata={"help": "Use distill loss"})
     use_distill_cse_loss: bool = field(default=True, metadata={"help": "Use distill cse loss"})
