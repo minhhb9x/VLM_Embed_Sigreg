@@ -10,7 +10,9 @@ wandb/
 eval_images/
 MMEB-eval_outputs/
 ER_outputs/
-caching/
+caching*/
 infer/
 meta_train/
 analyze/
+gmm_training/
+cosine_analysis/

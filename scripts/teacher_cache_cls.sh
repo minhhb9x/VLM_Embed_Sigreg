@@ -31,7 +31,7 @@ torchrun --nproc_per_node=$NUM_GPUS_PER_NODE \
     --subset_name "${SUBSETS[@]}" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
-    --output_dir "caching/B3_Qwen2_2B_cls" \
+    --output_dir "caching_1/B3_Qwen2_2B_cls" \
     --per_device_train_batch_size 4 \
     --seed 42 \
     --normalize False \

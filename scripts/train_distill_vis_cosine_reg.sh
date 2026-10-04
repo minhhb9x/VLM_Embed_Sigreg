@@ -51,7 +51,7 @@ echo "  NUM_LAYER: $NUM_LAYER"
 echo "============================================================"
 
 EXP_NAME="vis_cosine_reg_kd${KD_WEIGHT}_l${NUM_LAYER}"
-OUTPUT_MODEL="training/FastVLM-0.5B_cls_${EXP_NAME}"
+OUTPUT_DIR="training/FastVLM-0.5B_cls_${EXP_NAME}"
 
 torchrun --master_addr=127.0.0.1 --master_port=$PORT \
     --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
@@ -67,7 +67,7 @@ torchrun --master_addr=127.0.0.1 --master_port=$PORT \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
     --percent_data 1.0 \
-    --output_dir $OUTPUT_MODEL \
+    --output_dir $OUTPUT_DIR \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 1 \
     --learning_rate 1e-4 \

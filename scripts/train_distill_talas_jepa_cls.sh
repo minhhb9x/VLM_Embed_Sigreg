@@ -18,11 +18,9 @@ KD_WEIGHT=${3:-1}
 
 SIGREG_WEIGHT=${4:-0.05}
 
-NUM_CENTROIDS=${5:-8}
+NUM_LAYER=${5:-1}
 
-NUM_LAYER=${6:-1}
-
-PORT=${7:-29511}
+PORT=${6:-29511}
 
 # ============================================================
 # Convert True/False -> 1/0 cho tên folder
@@ -72,7 +70,7 @@ D_SIGREG=$(bool_to_int "$USE_SIGREG_LOSS")
 # ============================================================
 
 # EXP_NAME="cosine_jepa_d${D_DISTILL}_cse${D_CSE}_vis${D_VISION}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}_dt${D_TAU}"
-EXP_NAME="struct_vis-sigregot_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_cen_${NUM_CENTROIDS}_l${NUM_LAYER}"
+EXP_NAME="struct_sigreg_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}"
 
 OUTPUT_DIR="training/FastVLM-0.5B_cls_${EXP_NAME}"
 CACHE_DIR="caching/B3_Qwen2_2B_cls"
@@ -83,7 +81,6 @@ echo "  USE_DISTILL_LOSS      = $USE_DISTILL_LOSS"
 echo "  USE_SIGREG_LOSS       = $USE_SIGREG_LOSS"
 echo "  KD_WEIGHT             = $KD_WEIGHT"
 echo "  SIGREG_WEIGHT         = $SIGREG_WEIGHT"
-echo "  NUM_CENTROIDS         = $NUM_CENTROIDS"
 echo "  NUM_LAYER             = $NUM_LAYER"
 echo ""
 echo "OUTPUT_DIR:"
@@ -128,11 +125,11 @@ torchrun  \
     --kd_weight 1.0 \
     --projector_lr 5e-5 \
     --report_to None \
+    --gmm_ckpt "gmm_training/B3_Qwen2_2B_cls/gmm.joblib" \
     --use_distill_loss "$DISTILL_LOSS_BOOL" \
     --use_sigreg_loss "$SIGREG_BOOL" \
     --kd_weight "$KD_WEIGHT" \
     --sigreg_weight "$SIGREG_WEIGHT" \
-    --num_centroids "$NUM_CENTROIDS" \
     --num_layers "$NUM_LAYER" 
 
 

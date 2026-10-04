@@ -17,7 +17,8 @@ MODELS=(
     # "training1/FastVLM-0.5B_base_16_eos_cls/checkpoint-epoch-0"
     # "training/FastVLM-0.5B_1st_jepa0.05_cls/checkpoint-epoch-0"
     # "training/FastVLM-0.5B_last_jepa0.05_cls/checkpoint-epoch-0"
-    training1/FastVLM-0.5B_cred_cls/checkpoint-epoch-0
+    # "training1/FastVLM-0.5B_base_b8_cls/checkpoint-epoch-0"
+    "training/FastVLM-0.5B_cls_vis_cosine_reg_kd0.1_l23/checkpoint-epoch-0"
 )
 
 BACKBONES=(
@@ -26,6 +27,7 @@ BACKBONES=(
     # "llava_qwen2"
     # "llava_qwen2"
     # "llava_qwen2_old"
+    # "llava_qwen2"
     # "llava_qwen2"
     # "llava_qwen2"
     # "llava_qwen2"
@@ -39,7 +41,6 @@ if [ "${#MODELS[@]}" -ne "${#BACKBONES[@]}" ]; then
 fi
 
 mkdir -p infer
-mkdir -p projection_plots
 
 for i in "${!MODELS[@]}"; do
 
@@ -73,7 +74,7 @@ for i in "${!MODELS[@]}"; do
 
     CUDA_VISIBLE_DEVICES=0 python "$INFER_SCRIPT" \
         --model_name "$MODEL" \
-        --lora False \
+        --lora True \
         --lora_r 64 \
         --lora_alpha 64 \
         --pooling eos \
@@ -87,7 +88,7 @@ for i in "${!MODELS[@]}"; do
         --tgt_prefix_mod \
         --encode_output_path "$INFER_OUTPUT" \
         --per_device_eval_batch_size 8 \
-        --load_pretrained_lora False \
+        --load_pretrained_lora True \
         --report_to None \
         "${EXTRA_ARGS[@]}"
 

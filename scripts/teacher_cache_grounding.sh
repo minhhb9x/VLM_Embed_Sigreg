@@ -21,8 +21,7 @@ SUBSETS=(
 # Dùng torchrun để khởi chạy
 # =========================================================================
 CUDA_VISIBLE_DEVICES=0 \
-torchrun  --standalone \
-    --nproc_per_node=$NUM_GPUS_PER_NODE \
+torchrun --master_port=12345 --nproc_per_node=$NUM_GPUS_PER_NODE \
     $TRAIN_SCRIPT \
     --model_name raghavlite/B3_Qwen2_2B \
     --lora True \
@@ -34,8 +33,8 @@ torchrun  --standalone \
     --subset_name "${SUBSETS[@]}" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
-    --output_dir "caching/B3_Qwen2_2B_grounding" \
-    --per_device_train_batch_size 4 \
+    --output_dir "caching_1/B3_Qwen2_2B_grounding" \
+    --per_device_train_batch_size 8 \
     --image_resolution "mid" \
     --seed 42 \
     --normalize False \

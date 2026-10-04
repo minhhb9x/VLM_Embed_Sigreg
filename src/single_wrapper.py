@@ -350,6 +350,7 @@ class SingleDataset(Dataset):
             "rep": cache,
             "mean_last_img_token": None,
             "mean_last_text_token": None,
+            "pr_img_layers": None
         }
 
     def __getitem__(self, data_idx):
