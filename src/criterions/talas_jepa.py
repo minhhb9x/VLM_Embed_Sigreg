@@ -170,16 +170,17 @@ class TalasJepa(nn.Module):
         num_slices: int = 256,
         num_t: int = 17,
         t_max: float = 5.0,
+        num_sw_slices: int = 64,
     ) -> torch.Tensor:
         if student_x.ndim != 2 or student_x.size(0) == 0:
             raise ValueError("student_x phải có shape [N, D] và N > 0")
-        if num_slices < 1 or num_t < 2 or t_max <= 0:
-            raise ValueError("Cần num_slices >= 1, num_t >= 2 và t_max > 0")
+        if num_slices < 1 or num_t < 2 or t_max <= 0 or num_sw_slices < 1:
+            raise ValueError("num_slices, num_sw_slices >= 1; num_t >= 2; t_max > 0")
 
         device = student_x.device
         distributed = self.world_size > 1
-
         seed = random.randint(0, 2**63 - 1) if self.process_rank == 0 else 0
+
         if distributed:
             seed_tensor = torch.tensor(seed, device=device, dtype=torch.int64)
             dist.broadcast(seed_tensor, src=0)
@@ -189,96 +190,57 @@ class TalasJepa(nn.Module):
         generator.manual_seed(seed)
 
         with torch.autocast(device_type=device.type, enabled=False):
-            means = self.gmm_means.to(device=device)
-            variances = self.gmm_variances.to(device=device)
-            weights = self.gmm_weights.to(device=device)
+            means = self.gmm_means.to(device=device, dtype=torch.float32)
+            variances = self.gmm_variances.to(device=device, dtype=torch.float32)
+            weights = self.gmm_weights.to(device=device, dtype=torch.float32)
 
-            # A và B thuộc hai không gian khác chiều.
-            A = torch.randn(
-                student_x.size(1), num_slices,
-                generator=generator, device=device, dtype=torch.float32,
-            )
+            A = torch.randn(student_x.size(1), num_slices, generator=generator, device=device)
+            B = torch.randn(means.size(1), num_slices, generator=generator, device=device)
             A = F.normalize(A, dim=0)
-
-            B = torch.randn(
-                means.size(1), num_slices,
-                generator=generator, device=device, dtype=torch.float32,
-            )
             B = F.normalize(B, dim=0)
 
-            t = torch.linspace(
-                -t_max, t_max, num_t, device=device, dtype=torch.float32
-            )
-
-            # ECF của batch student: [M, T, 2].
+            t = torch.linspace(-t_max, t_max, num_t, device=device)
             student_phase = (student_x.float() @ A).unsqueeze(-1) * t
             student_sum = torch.stack(
-                [
-                    student_phase.cos().sum(dim=0),
-                    student_phase.sin().sum(dim=0),
-                ],
-                dim=-1,
+                [student_phase.cos().sum(dim=0), student_phase.sin().sum(dim=0)], dim=-1
             )
 
-            count = torch.tensor(
-                student_x.size(0), device=device, dtype=torch.float32
-            )
+            count = torch.tensor(student_x.size(0), device=device, dtype=torch.float32)
             if distributed:
-                student_sum = grad_all_reduce(
-                    student_sum, op=dist.ReduceOp.SUM
-                )
+                student_sum = grad_all_reduce(student_sum, op=dist.ReduceOp.SUM)
                 dist.all_reduce(count, op=dist.ReduceOp.SUM)
+            student_ecf = student_sum / count  # [M, T, 2]
 
-            student_ecf = student_sum / count
-
-            # CF giải tích của GMM teacher: [M, T, 2].
-            # GMM diag: a^T Σ_k a = Σ_d variance[k,d] * a[d]^2.
             with torch.no_grad():
-                projected_means = means @ B                    # [K, M]
-                projected_vars = variances @ B.square()        # [K, M]
-
-                phase = projected_means.unsqueeze(-1) * t     # [K, M, T]
-                decay = torch.exp(
-                    -0.5 * projected_vars.unsqueeze(-1) * t.square()
-                )
-                mixture_weights = weights[:, None, None]
-
-                teacher_real = (
-                    mixture_weights * decay * phase.cos()
-                ).sum(dim=0)
-                teacher_imag = (
-                    mixture_weights * decay * phase.sin()
-                ).sum(dim=0)
+                projected_means = means @ B
+                projected_vars = variances @ B.square()
+                phase = projected_means.unsqueeze(-1) * t
+                decay = torch.exp(-0.5 * projected_vars.unsqueeze(-1) * t.square())
+                weighted_decay = weights[:, None, None] * decay
                 teacher_cf = torch.stack(
-                    [teacher_real, teacher_imag], dim=-1
-                )
+                    [(weighted_decay * phase.cos()).sum(dim=0),
+                    (weighted_decay * phase.sin()).sum(dim=0)],
+                    dim=-1,
+                )  # [M, T, 2]
 
-            # Cost giữa mọi cặp hướng student và teacher.
-            # student_ecf: [M, T, 2]
-            # teacher_cf:  [M, T, 2]
-            # Kênh cuối là [phần thực, phần ảo].
-            window = torch.exp(-0.5 * t.square())  # [T]
+            # Đưa trọng số tích phân theo t vào từng tọa độ của vector CF.
+            dt = t[1] - t[0]
+            quad_weight = torch.exp(-0.5 * t.square()) * dt
+            quad_weight = quad_weight.clone()
+            quad_weight[0] *= 0.5
+            quad_weight[-1] *= 0.5
+            scale = quad_weight.sqrt()[None, :, None]
 
-            diff = student_ecf[:, None, :, :] - teacher_cf[None, :, :, :]
-            # [M_student, M_teacher, T, 2]
+            student_feat = (student_ecf * scale).reshape(num_slices, 2 * num_t)
+            teacher_feat = (teacher_cf * scale).reshape(num_slices, 2 * num_t)
 
-            err = diff.square().sum(dim=-1) * window[None, None, :]
-            # [M_student, M_teacher, T]
-            # sum(dim=-1) cộng sai số phần thực và phần ảo.
+            # Sliced Wasserstein giữa hai tập gồm M vector CF.
+            R = torch.randn(2 * num_t, num_sw_slices, generator=generator, device=device)
+            R = F.normalize(R, dim=0)
+            student_sorted = (student_feat @ R).sort(dim=0).values
+            teacher_sorted = (teacher_feat @ R).sort(dim=0).values
 
-            cost = torch.trapezoid(err, t, dim=-1)
-            # [M_student, M_teacher]                               # [M, M]
-
-            # Giữ phép ghép 1–1 của hàm cũ.
-            with torch.no_grad():
-                row_np, col_np = linear_sum_assignment(
-                    cost.detach().cpu().numpy()
-                )
-
-            row = torch.as_tensor(row_np, device=device, dtype=torch.long)
-            col = torch.as_tensor(col_np, device=device, dtype=torch.long)
-
-            return count * cost[row, col].mean()
+            return count * (student_sorted - teacher_sorted).square().mean()
 
 
     def mi_loss(
@@ -537,22 +499,22 @@ class TalasJepa(nn.Module):
         if self.args.use_sigreg_loss:
             # Dùng reps local: kd_sigreg tự all_reduce ECF khi chạy DDP.
 
-            num_layer = self.args.num_layers
-            for i in range(1, num_layer+1):
-                student_qry_reps = pooling(student_qry_hidden_states[-i], student_qry_input['attention_mask'], mode='eos', normalize=False)
-                student_pos_reps = pooling(student_pos_hidden_states[-i], student_pos_input['attention_mask'], mode='eos', normalize=False)
+            selected_layers = self.args.num_layers
+            student_qry_reps = pooling(student_qry_hidden_states[selected_layers], student_qry_input['attention_mask'], mode='eos', normalize=False)
+            student_pos_reps = pooling(student_pos_hidden_states[selected_layers], student_pos_input['attention_mask'], mode='eos', normalize=False)
 
-                student_eos = torch.cat(
-                    [student_qry_reps, student_pos_reps],
-                    dim=0,
-                )  # [2 * local_batch_size, D_student]
+            student_eos = torch.cat(
+                [student_qry_reps, student_pos_reps],
+                dim=0,
+            )  # [2 * local_batch_size, D_student]
 
-                sigreg_loss += self.kd_sigreg(
-                    student_eos,
-                    num_slices=256,
-                    num_t=17,
-                    t_max=5.0,
-                )
+            sigreg_loss += self.kd_sigreg(
+                student_eos,
+                num_slices=256,
+                num_t=17,
+                t_max=5.0,
+                num_sw_slices=64
+            )
 
 
         # overall loss

@@ -9,17 +9,92 @@ TRAIN_SCRIPT="train_ddp.py"
 # =========================================================================
 # Dùng torchrun để khởi chạy
 # =========================================================================
-torchrun --master_addr=127.0.0.1 --master_port=29511 \
+
+USE_DISTILL_LOSS=${1:-True}
+
+USE_SIGREG_LOSS=${2:-True}
+
+KD_WEIGHT=${3:-1}
+
+SIGREG_WEIGHT=${4:-0.05}
+
+NUM_LAYER=${5:-1}
+
+PORT=${6:-29511}
+
+# ============================================================
+# Convert True/False -> 1/0 cho tên folder
+# ============================================================
+
+bool_to_python() {
+    case "$1" in
+        1|true|True|TRUE)
+            echo "True"
+            ;;
+        0|false|False|FALSE)
+            echo "False"
+            ;;
+        *)
+            echo "ERROR: Boolean argument must be 0/1 or True/False, got '$1'" >&2
+            exit 1
+            ;;
+    esac
+}
+
+bool_to_int() {
+    case "$1" in
+        1|true|True|TRUE)
+            echo "1"
+            ;;
+        0|false|False|FALSE)
+            echo "0"
+            ;;
+        *)
+            echo "ERROR: Boolean argument must be 0/1 or True/False, got '$1'" >&2
+            exit 1
+            ;;
+    esac
+}
+
+
+# Python values
+DISTILL_LOSS_BOOL=$(bool_to_python "$USE_DISTILL_LOSS")
+SIGREG_BOOL=$(bool_to_python "$USE_SIGREG_LOSS")
+
+# Folder values
+D_DISTILL=$(bool_to_int "$USE_DISTILL_LOSS")
+D_SIGREG=$(bool_to_int "$USE_SIGREG_LOSS")
+
+# ============================================================
+# Tên experiment
+# ============================================================
+
+# EXP_NAME="cosine_jepa_d${D_DISTILL}_cse${D_CSE}_vis${D_VISION}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}_dt${D_TAU}"
+EXP_NAME="struct_sigreg_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}"
+
+OUTPUT_DIR="training/FastVLM-0.5B_vqa_${EXP_NAME}"
+CACHE_DIR="caching/B3_Qwen2_2B_vqa"
+
+echo "============================================================"
+echo "Experiment:"
+echo "  USE_DISTILL_LOSS      = $USE_DISTILL_LOSS"
+echo "  USE_SIGREG_LOSS       = $USE_SIGREG_LOSS"
+echo "  KD_WEIGHT             = $KD_WEIGHT"
+echo "  SIGREG_WEIGHT         = $SIGREG_WEIGHT"
+echo "  NUM_LAYER             = $NUM_LAYER"
+echo ""
+echo "OUTPUT_DIR:"
+echo "  $OUTPUT_DIR"
+echo "============================================================"
+
+torchrun  \
+    --master_addr=127.0.0.1 --master_port=$PORT \
     --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --model_name apple/FastVLM-0.5B \
-    --teacher_model_name "raghavlite/B3_Qwen2_2B" \
     --lora True \
     --teacher_lora True \
     --lora_r 64 \
     --lora_alpha 64 \
-    --teacher_lora_r 8 \
-    --teacher_pooling "eos" \
-    --teacher_backbone "qwen2_vl" \
     --model_backbone "llava_qwen2" \
     --pooling "eos" \
     --dataset_name "TIGER-Lab/MMEB-train" \
@@ -27,7 +102,7 @@ torchrun --master_addr=127.0.0.1 --master_port=29511 \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
     --percent_data 1.0 \
-    --output_dir "training/FastVLM-0.5B_jepa_vqa" \
+    --output_dir "$OUTPUT_DIR" \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 1 \
     --learning_rate 1e-4 \
@@ -46,12 +121,80 @@ torchrun --master_addr=127.0.0.1 --master_port=29511 \
     --kd_loss_type "talas_jepa" \
     --image_resolution "low" \
     --projector_config_path "./config/projector_config_emo.json" \
-    --use_sigreg_loss True \
-    --sigreg_weight 1.0 \
+    --sigreg_weight 0.05 \
+    --kd_weight 1.0 \
     --projector_lr 5e-5 \
-    --report_to None
+    --report_to None \
+    --gmm_ckpt "gmm_training/B3_Qwen2_2B_vqa/gmm.joblib" \
+    --use_distill_loss "$DISTILL_LOSS_BOOL" \
+    --use_sigreg_loss "$SIGREG_BOOL" \
+    --kd_weight "$KD_WEIGHT" \
+    --sigreg_weight "$SIGREG_WEIGHT" \
+    --num_layers "$NUM_LAYER" 
+
+
+# ============================================================
+# 2. CHECKPOINT
+# ============================================================
+
+MODEL="$OUTPUT_DIR/checkpoint-epoch-0"
+
+if [ ! -d "$MODEL" ]; then
+    echo "ERROR: Checkpoint not found:"
+    echo "$MODEL"
+    exit 1
+fi
+
+echo ""
+echo "============================================================"
+echo "Training finished."
+echo "Checkpoint:"
+echo "  $MODEL"
+echo "============================================================"
+
 
 SUBSETS=(
-  "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W"
-  "ScienceQA" "VizWiz" "GQA" "TextVQA"
+    "ImageNet-1K"
+    "N24News"
+    "HatefulMemes"
+    "VOC2007"
+    "SUN397"
+    "Place365"
+    "ImageNet-A"
+    "ImageNet-R"
+    "ObjectNet"
+    "Country211"
 )
+
+EVAL_OUTPUT="./MMEB-eval_outputs/FastVLM-0.5B_vqa_${EXP_NAME}/"
+
+python eval_mmeb.py \
+    --model_name "$MODEL" \
+    --encode_output_path "$EVAL_OUTPUT" \
+    --lora True --lora_r 64 --lora_alpha 64 \
+    --pooling eos \
+    --model_backbone llava_qwen2 \
+    --normalize True \
+    --bf16 \
+    --dataset_name TIGER-Lab/MMEB-eval \
+    --subset_name "${SUBSETS[@]}" \
+    --dataset_split test \
+    --per_device_eval_batch_size 32 \
+    --image_dir eval_images/ \
+    --tgt_prefix_mod \
+    --load_pretrained_lora True \
+    --report_to none
+
+
+echo ""
+echo "============================================================"
+echo "DONE"
+echo "Experiment:"
+echo "  $EXP_NAME"
+echo ""
+echo "Train:"
+echo "  $OUTPUT_DIR"
+echo ""
+echo "Eval:"
+echo "  $EVAL_OUTPUT"
+echo "============================================================"

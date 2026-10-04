@@ -18,7 +18,7 @@ KD_WEIGHT=${3:-1}
 
 SIGREG_WEIGHT=${4:-0.05}
 
-NUM_LAYER=${5:-1}
+NUM_LAYER=${5:-24}
 
 PORT=${6:-29511}
 
@@ -70,7 +70,7 @@ D_SIGREG=$(bool_to_int "$USE_SIGREG_LOSS")
 # ============================================================
 
 # EXP_NAME="cosine_jepa_d${D_DISTILL}_cse${D_CSE}_vis${D_VISION}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}_dt${D_TAU}"
-EXP_NAME="struct_sigreg_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}"
+EXP_NAME="struct_sigreg_SW_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}"
 
 OUTPUT_DIR="training/FastVLM-0.5B_cls_${EXP_NAME}"
 CACHE_DIR="caching/B3_Qwen2_2B_cls"
