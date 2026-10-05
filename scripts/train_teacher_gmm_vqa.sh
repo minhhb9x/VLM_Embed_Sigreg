@@ -9,7 +9,7 @@ SUBSETS=(
 # Dùng torchrun để khởi chạy
 # =========================================================================
 python train_teacher_gmm.py \
-    --caching_dir "caching_1/B3_Qwen2_2B_vqa" \
+    --caching_dir "caching/B3_Qwen2_2B_vqa" \
     --subset_name "${SUBSETS[@]}" \
     --seed 42 \
     --n_components 32 \

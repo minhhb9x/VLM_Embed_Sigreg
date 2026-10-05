@@ -168,8 +168,8 @@ class TalasJepa(nn.Module):
         self,
         student_x: torch.Tensor,
         num_slices: int = 256,
-        num_t: int = 17,
-        t_max: float = 5.0,
+        num_t: int = 33,
+        t_max: float = 1.5,
         num_sw_slices: int = 64,
     ) -> torch.Tensor:
         if student_x.ndim != 2 or student_x.size(0) == 0:
@@ -511,8 +511,8 @@ class TalasJepa(nn.Module):
             sigreg_loss += self.kd_sigreg(
                 student_eos,
                 num_slices=256,
-                num_t=17,
-                t_max=5.0,
+                num_t=self.args.num_t,
+                t_max=self.args.t_max,
                 num_sw_slices=64
             )
 

@@ -9,27 +9,29 @@ INFER_SUBSETS=(
 )
 
 MODELS=(
-    "raghavlite/B3_Qwen2_2B"
-    training/FastVLM-0.5B_cls_struct_sigreg_gmm_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
-    training_old/FastVLM-0.5B_cls_rkd_kdjepa_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
-    training_old/FastVLM-0.5B_cls_rkd_kdjepa_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
+    # "raghavlite/B3_Qwen2_2B"
+    # training/FastVLM-0.5B_cls_struct_sigreg_gmm_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
+    # training_old/FastVLM-0.5B_cls_rkd_kdjepa_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
+    # training_old/FastVLM-0.5B_cls_rkd_kdjepa_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
     # training_old/FastVLM-0.5B_cls_teacherinfo_jepa_d1_sig1_kd1_sw0.05_l15/checkpoint-epoch-0
     # training_old/FastVLM-0.5B_cls_teacherinfo_jepa_d0_sig1_kd1_sw0.05_l15/checkpoint-epoch-0
     # "apple/FastVLM-0.5B"
-    "training1/FastVLM-0.5B_base_16_eos_cls/checkpoint-epoch-0"
-    "training_old/FastVLM-0.5B_1st_jepa0.05_cls/checkpoint-epoch-0"
-    "training_old/FastVLM-0.5B_last_jepa0.05_cls/checkpoint-epoch-0"
+    # "training1/FastVLM-0.5B_base_16_eos_cls/checkpoint-epoch-0"
+    # "training_old/FastVLM-0.5B_1st_jepa0.05_cls/checkpoint-epoch-0"
+    # "training_old/FastVLM-0.5B_last_jepa0.05_cls/checkpoint-epoch-0"
+    "training/FastVLM-0.5B_cls_struct_sigreg_SW_gmm_d0_sig1_kd1_sw0.05_l24/checkpoint-epoch-0"
 )
 
 BACKBONES=(
-    "qwen2_vl"
-    "llava_qwen2"
-    "llava_qwen2"
-    "llava_qwen2"
+    # "qwen2_vl"
+    # "llava_qwen2"
+    # "llava_qwen2"
+    # "llava_qwen2"
     # "llava_qwen2"
     # "llava_qwen2_old"
-    "llava_qwen2"
-    "llava_qwen2"
+    # "llava_qwen2"
+    # "llava_qwen2"
+    # "llava_qwen2"
     "llava_qwen2"
 )
 

@@ -138,6 +138,8 @@ class TrainingArguments(TrainingArguments):
     num_layers: int = field(default=1, metadata={"help": "Number of layers for sigreg"})
     d_cse_temperature: float = field(default=0.02, metadata={"help": "distill cse temperature for softmax"})
     gmm_ckpt: str = field(default=None, metadata={"help": "GMM checkpoint path for distillation"})
+    num_t: int = field(default=33, metadata={"help": "Number of t for characteristic function"})
+    t_max: float = field(default=1.5, metadata={"help": "Maximum t for characteristic function"})
 
 @dataclass
 class MTEBArguments:

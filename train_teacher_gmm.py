@@ -14,7 +14,7 @@ from sklearn.mixture import GaussianMixture
 # ---- siêu tham số GMM (không nằm trong args nên đặt ở đây) ----
 
 PCA_DIM = None        # ví dụ 128 để giảm chiều trước khi fit; None = giữ nguyên 1536
-L2_NORMALIZE = True
+L2_NORMALIZE = False
 
 
 def load_embeddings(data_args):
@@ -41,7 +41,8 @@ def load_embeddings(data_args):
                 t = t.float().reshape(-1, t.shape[-1])
                 chunks.append(t.numpy())
 
-    X = np.concatenate(chunks, axis=0).astype(np.float32)
+    X = np.concatenate(chunks, axis=0, dtype=np.float64)
+    chunks.clear()
     print(f"Loaded {X.shape[0]} samples, dim {X.shape[1]}")
     return X
 
@@ -51,7 +52,7 @@ def main():
 
     parser.add_argument("--n_components", type=int, default=32)
     parser.add_argument("--cov_type", type=str, default="diag")
-    parser.add_argument("--reg_covar", type=float, default=-5)
+    parser.add_argument("--reg_covar", type=float, default=1e-4)
     parser.add_argument("--max_iter", type=int, default=100)
     parser.add_argument("--tol", type=float, default=1e-3)
 
@@ -63,6 +64,7 @@ def main():
     X = load_embeddings(data_args)
 
     if L2_NORMALIZE:
+        Print("-----------------L2-normalizing...----------------")
         X /= np.linalg.norm(X, axis=1, keepdims=True) + 1e-12
 
     pca = None
