@@ -19,7 +19,7 @@ MODELS=(
     # "training1/FastVLM-0.5B_base_16_eos_cls/checkpoint-epoch-0"
     # "training_old/FastVLM-0.5B_1st_jepa0.05_cls/checkpoint-epoch-0"
     # "training_old/FastVLM-0.5B_last_jepa0.05_cls/checkpoint-epoch-0"
-    "training/FastVLM-0.5B_cls_struct_sigreg_SW_gmm_d0_sig1_kd1_sw0.05_l24/checkpoint-epoch-0"
+    "training/FastVLM-0.5B_cls_struct_sigreg_SW_gmm_d0_sig1_kd1_sw0.1_numt33_tmax1.5_l24/checkpoint-epoch-0"
 )
 
 BACKBONES=(

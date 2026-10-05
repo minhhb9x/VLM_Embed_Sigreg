@@ -45,6 +45,15 @@ class TalasJepa(nn.Module):
             persistent=False,
         )
 
+        Dt = gmm_model.means_.shape[1]
+        g_fixed = torch.Generator(device="cpu").manual_seed(42)
+        self.register_buffer(
+            "gmm_G",
+            torch.randn(Dt, args.Ds, 
+                generator=g_fixed, 
+                dtype=torch.float32) / math.sqrt(Dt),
+        )
+
     def _dist_gather_tensor(self, t: torch.Tensor):
         t = t.contiguous()
         all_tensors = [torch.empty_like(t) for _ in range(self.world_size)]
@@ -164,7 +173,7 @@ class TalasJepa(nn.Module):
 
         return sigreg_per_slice.mean()
 
-    def kd_sigreg(
+    def kd_sigreg_old(
         self,
         student_x: torch.Tensor,
         num_slices: int = 256,
@@ -242,6 +251,83 @@ class TalasJepa(nn.Module):
 
             return count * (student_sorted - teacher_sorted).square().mean()
 
+    def kd_sigreg(
+        self,
+        student_x: torch.Tensor,
+        num_slices: int = 256,
+        num_t: int = 17,
+        t_max: float = 5.0,
+        normalize_b: bool = True,
+    ) -> torch.Tensor:
+        """SIGReg với đích là MoG của teacher.
+
+        Hướng a (không gian student, Ds) -> b = G a (không gian teacher, Dt),
+        với G cố định [Dt, Ds] (rút offline, lưu cùng checkpoint).
+        """
+        if student_x.ndim != 2 or student_x.size(0) == 0:
+            raise ValueError("student_x phải có shape [N, D] và N > 0")
+        if num_slices < 1 or num_t < 2 or t_max <= 0:
+            raise ValueError("num_slices >= 1; num_t >= 2; t_max > 0")
+
+        device = student_x.device
+        distributed = self.world_size > 1
+
+        seed = random.randint(0, 2**63 - 1) if self.process_rank == 0 else 0
+        if distributed:
+            seed_tensor = torch.tensor(seed, device=device, dtype=torch.int64)
+            dist.broadcast(seed_tensor, src=0)
+            seed = int(seed_tensor.item())
+
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
+        with torch.autocast(device_type=device.type, enabled=False):
+            means = self.gmm_means.to(device=device, dtype=torch.float32)          # [K, Dt]
+            variances = self.gmm_variances.to(device=device, dtype=torch.float32)  # [K, Dt]
+            weights = self.gmm_weights.to(device=device, dtype=torch.float32)      # [K]
+            G = self.gmm_G.to(device=device, dtype=torch.float32)                  # [Dt, Ds]
+
+            x = student_x.float()
+            if G.size(1) != x.size(1):
+                raise ValueError(f"G có Ds={G.size(1)} nhưng student_x có D={x.size(1)}")
+
+            # Hướng đơn vị trong không gian student
+            A = F.normalize(
+                torch.randn(x.size(1), num_slices, generator=generator, device=device), dim=0
+            )  # [Ds, M]
+
+            t = torch.linspace(-t_max, t_max, num_t, device=device)
+            win = torch.exp(-0.5 * t.square())
+
+            # ---- Student: ECF của a^T h ----
+            phase_s = (x @ A).unsqueeze(-1) * t                                    # [N, M, T]
+            s = torch.stack([phase_s.cos().sum(0), phase_s.sin().sum(0)], dim=-1)  # [M, T, 2]
+
+            count = torch.tensor(float(x.size(0)), device=device)
+            if distributed:
+                s = grad_all_reduce(s, op=dist.ReduceOp.SUM)
+                dist.all_reduce(count, op=dist.ReduceOp.SUM)
+            student_ecf = s / count                                                # [M, T, 2]
+
+            # ---- Teacher: CF closed-form của MoG chiếu theo b = G a ----
+            with torch.no_grad():
+                b = G @ A                                                          # [Dt, M]
+                if normalize_b:
+                    b = F.normalize(b, dim=0)   # K=1 -> đúng SIGReg gốc
+                pm = means @ b                                                     # [K, M]
+                pv = variances @ b.square()                                        # [K, M]
+                decay = weights[:, None, None] * torch.exp(
+                    -0.5 * pv.unsqueeze(-1) * t.square()
+                )                                                                  # [K, M, T]
+                phase_t = pm.unsqueeze(-1) * t
+                teacher_cf = torch.stack(
+                    [(decay * phase_t.cos()).sum(0), (decay * phase_t.sin()).sum(0)],
+                    dim=-1,
+                )                                                                  # [M, T, 2]
+
+            # ---- Loss: N * trapz(|ECF - CF|^2 * exp(-t^2/2)), trung bình trên slice ----
+            err = (student_ecf - teacher_cf).square().sum(-1) * win                # [M, T]
+            return torch.trapz(err, t, dim=-1).mean() * count
 
     def mi_loss(
             self,
@@ -513,7 +599,7 @@ class TalasJepa(nn.Module):
                 num_slices=256,
                 num_t=self.args.num_t,
                 t_max=self.args.t_max,
-                num_sw_slices=64
+                # num_sw_slices=64
             )
 
 

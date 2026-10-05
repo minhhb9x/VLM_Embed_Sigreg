@@ -140,6 +140,7 @@ class TrainingArguments(TrainingArguments):
     gmm_ckpt: str = field(default=None, metadata={"help": "GMM checkpoint path for distillation"})
     num_t: int = field(default=33, metadata={"help": "Number of t for characteristic function"})
     t_max: float = field(default=1.5, metadata={"help": "Maximum t for characteristic function"})
+    Ds: int = field(default=896, metadata={"help": "Hidden dimension for student model"})
 
 @dataclass
 class MTEBArguments:
