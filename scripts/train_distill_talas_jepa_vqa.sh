@@ -14,13 +14,17 @@ USE_DISTILL_LOSS=${1:-True}
 
 USE_SIGREG_LOSS=${2:-True}
 
-KD_WEIGHT=${3:-1}
+KD_WEIGHT=${3:-10}
 
-SIGREG_WEIGHT=${4:-0.05}
+SIGREG_WEIGHT=${4:-0.1}
 
-NUM_LAYER=${5:-1}
+NUM_T=${5:-17}
 
-PORT=${6:-29511}
+T_MAX=${6:-5}
+
+NUM_LAYER=${7:-24}
+
+PORT=${8:-29511}
 
 # ============================================================
 # Convert True/False -> 1/0 cho tên folder
@@ -70,7 +74,8 @@ D_SIGREG=$(bool_to_int "$USE_SIGREG_LOSS")
 # ============================================================
 
 # EXP_NAME="cosine_jepa_d${D_DISTILL}_cse${D_CSE}_vis${D_VISION}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}_dt${D_TAU}"
-EXP_NAME="struct_sigreg_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_l${NUM_LAYER}"
+# EXP_NAME="struct_sigreg_JL_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_numt${NUM_T}_tmax${T_MAX}_l${NUM_LAYER}"
+EXP_NAME="struct_sigreg_SW_gmm_d${D_DISTILL}_sig${D_SIGREG}_kd${KD_WEIGHT}_sw${SIGREG_WEIGHT}_numt${NUM_T}_tmax${T_MAX}_l${NUM_LAYER}"
 
 OUTPUT_DIR="training/FastVLM-0.5B_vqa_${EXP_NAME}"
 CACHE_DIR="caching/B3_Qwen2_2B_vqa"
@@ -82,6 +87,8 @@ echo "  USE_SIGREG_LOSS       = $USE_SIGREG_LOSS"
 echo "  KD_WEIGHT             = $KD_WEIGHT"
 echo "  SIGREG_WEIGHT         = $SIGREG_WEIGHT"
 echo "  NUM_LAYER             = $NUM_LAYER"
+echo "  NUM_T                 = $NUM_T"
+echo "  T_MAX                 = $T_MAX"
 echo ""
 echo "OUTPUT_DIR:"
 echo "  $OUTPUT_DIR"
@@ -116,13 +123,10 @@ torchrun  \
     --normalize True \
     --lr_scheduler_type "constant" \
     --warmup_ratio 0.05 \
-    --kd_weight 1.0 \
-    --caching_dir "caching/B3_Qwen2_2B_vqa" \
+    --caching_dir "$CACHE_DIR" \
     --kd_loss_type "talas_jepa" \
     --image_resolution "low" \
     --projector_config_path "./config/projector_config_emo.json" \
-    --sigreg_weight 0.05 \
-    --kd_weight 1.0 \
     --projector_lr 5e-5 \
     --report_to None \
     --gmm_ckpt "gmm_training/B3_Qwen2_2B_vqa/gmm.joblib" \
@@ -130,6 +134,8 @@ torchrun  \
     --use_sigreg_loss "$SIGREG_BOOL" \
     --kd_weight "$KD_WEIGHT" \
     --sigreg_weight "$SIGREG_WEIGHT" \
+    --num_t "$NUM_T" \
+    --t_max "$T_MAX" \
     --num_layers "$NUM_LAYER" 
 
 
@@ -154,16 +160,8 @@ echo "============================================================"
 
 
 SUBSETS=(
-    "ImageNet-1K"
-    "N24News"
-    "HatefulMemes"
-    "VOC2007"
-    "SUN397"
-    "Place365"
-    "ImageNet-A"
-    "ImageNet-R"
-    "ObjectNet"
-    "Country211"
+  "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W"
+  "ScienceQA" "VizWiz" "GQA" "TextVQA"
 )
 
 EVAL_OUTPUT="./MMEB-eval_outputs/FastVLM-0.5B_vqa_${EXP_NAME}/"

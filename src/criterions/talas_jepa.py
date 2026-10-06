@@ -173,12 +173,12 @@ class TalasJepa(nn.Module):
 
         return sigreg_per_slice.mean()
 
-    def kd_sigreg_old(
+    def kd_sigreg(
         self,
         student_x: torch.Tensor,
         num_slices: int = 256,
-        num_t: int = 33,
-        t_max: float = 1.5,
+        num_t: int = 17,
+        t_max: float = 5.0,
         num_sw_slices: int = 64,
     ) -> torch.Tensor:
         if student_x.ndim != 2 or student_x.size(0) == 0:
@@ -251,7 +251,7 @@ class TalasJepa(nn.Module):
 
             return count * (student_sorted - teacher_sorted).square().mean()
 
-    def kd_sigreg(
+    def kd_sigreg_old(
         self,
         student_x: torch.Tensor,
         num_slices: int = 256,
