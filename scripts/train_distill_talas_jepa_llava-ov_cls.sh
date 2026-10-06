@@ -97,7 +97,7 @@ echo "============================================================"
 torchrun  \
     --master_addr=127.0.0.1 --master_port=$PORT \
     --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
-    --model_name models/llava-onevision-qwen2-0.5b-ov-hf \
+    --model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf \
     --lora True \
     --teacher_lora True \
     --lora_r 64 \
