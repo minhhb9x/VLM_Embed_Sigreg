@@ -9,7 +9,7 @@ SUBSETS=(
 MODEL=training/FastVLM-0.5B_cls_rkd_jepa_d1_sig0_kd0.3_sw0.05_l15/checkpoint-final
 
 
-CUDA_VISIBLE_DEVICES=0 python eval_mmeb_2.py \
+CUDA_VISIBLE_DEVICES=0 python eval_mmeb.py \
     --model_name $MODEL \
     --encode_output_path './MMEB-eval_outputs/FastVLM-0.5B_cls_rkd_jepa_d1_sig0_kd0.3_sw0.05_l15/' \
     --lora True --lora_r 64 --lora_alpha 64 \

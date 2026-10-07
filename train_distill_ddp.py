@@ -269,7 +269,7 @@ class Trainer:
                 
                 student = self.distiller.module.student
                 student.encoder.save_pretrained(ckpt_dir)
-                if self.model_args.model_backbone in ["llava_onevision", "llava_two_vision"]:
+                if self.model_args.model_backbone in ["llava_onevision", "llava_two_vision", "llava_onevision_old"]:
                     torch.save(student.encoder.model.multi_modal_projector.state_dict(), projector_dir)
                 else:
                     # if hasattr(student.encoder.model.model, 'mm_projector'):
@@ -299,7 +299,7 @@ class Trainer:
             os.makedirs(final_ckpt_dir, exist_ok=True)
             student = self.distiller.module.student
             student.encoder.save_pretrained(final_ckpt_dir)
-            if self.model_args.model_backbone in ["llava_onevision", "llava_two_vision"]:
+            if self.model_args.model_backbone in ["llava_onevision", "llava_two_vision", "llava_onevision_old"]:
                 torch.save(student.encoder.model.multi_modal_projector.state_dict(), projector_dir)
             else:
                 # if hasattr(student.encoder.model.model, 'mm_projector'):

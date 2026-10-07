@@ -159,7 +159,7 @@ echo "  $MODEL"
 echo "============================================================"
 
 
-EVAL_SUBSETS=(
+SUBSETS=(
   "MSCOCO" "RefCOCO" "RefCOCO-Matching" "Visual7W-Pointing"
 )
 
