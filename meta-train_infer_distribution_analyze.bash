@@ -4,35 +4,35 @@ INFER_SCRIPT="infer_eval_hidden_attention.py"   # sửa thành script infer củ
 
 INFER_SUBSETS=(
     "ImageNet-1K"
-    # "N24News" "HatefulMemes" "VOC2007" "SUN397"
-    # "Place365" "ImageNet-A" "ImageNet-R" "ObjectNet" "Country211"
+    "N24News" "HatefulMemes" "VOC2007" "SUN397"
+    "Place365" "ImageNet-A" "ImageNet-R" "ObjectNet" "Country211"
 )
 
 MODELS=(
     # "raghavlite/B3_Qwen2_2B"
-    # training/FastVLM-0.5B_cls_struct_sigreg_gmm_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
+    training/FastVLM-0.5B_cls_struct_sigreg_SW_gmm_d1_sig1_kd10_sw0.1_numt17_tmax5_l24/checkpoint-epoch-0
     # training_old/FastVLM-0.5B_cls_rkd_kdjepa_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
     # training_old/FastVLM-0.5B_cls_rkd_kdjepa_d0_sig1_kd1_sw0.05_l1/checkpoint-epoch-0
     # training_old/FastVLM-0.5B_cls_teacherinfo_jepa_d1_sig1_kd1_sw0.05_l15/checkpoint-epoch-0
     # training_old/FastVLM-0.5B_cls_teacherinfo_jepa_d0_sig1_kd1_sw0.05_l15/checkpoint-epoch-0
     # "apple/FastVLM-0.5B"
-    # "training1/FastVLM-0.5B_base_16_eos_cls/checkpoint-epoch-0"
+    "training1/FastVLM-0.5B_base_16_eos_cls/checkpoint-epoch-0"
     # "training_old/FastVLM-0.5B_1st_jepa0.05_cls/checkpoint-epoch-0"
     # "training_old/FastVLM-0.5B_last_jepa0.05_cls/checkpoint-epoch-0"
-    "training/FastVLM-0.5B_cls_struct_sigreg_SW_gmm_d0_sig1_kd1_sw0.1_numt33_tmax1.5_l24/checkpoint-epoch-0"
+    # "training/FastVLM-0.5B_cls_struct_sigreg_SW_gmm_d0_sig1_kd1_sw0.1_numt33_tmax1.5_l24/checkpoint-epoch-0"
 )
 
 BACKBONES=(
     # "qwen2_vl"
-    # "llava_qwen2"
+    "llava_qwen2"
     # "llava_qwen2"
     # "llava_qwen2"
     # "llava_qwen2"
     # "llava_qwen2_old"
-    # "llava_qwen2"
-    # "llava_qwen2"
-    # "llava_qwen2"
     "llava_qwen2"
+    # "llava_qwen2"
+    # "llava_qwen2"
+    # "llava_qwen2"
 )
 
 # Kiểm tra MODELS và BACKBONES có cùng số phần tử không
@@ -74,33 +74,39 @@ for i in "${!MODELS[@]}"; do
     echo "Extra args: ${EXTRA_ARGS[*]}"
     echo "========================================================"
 
-    CUDA_VISIBLE_DEVICES=0 python "$INFER_SCRIPT" \
-        --model_name "$MODEL" \
-        --lora True \
-        --lora_r 64 \
-        --lora_alpha 64 \
-        --pooling eos \
-        --model_backbone "$BACKBONE" \
-        --normalize False \
-        --bf16 \
-        --dataset_name "TIGER-Lab/MMEB-eval" \
-        --subset_name "${INFER_SUBSETS[@]}" \
-        --dataset_split "test" \
-        --image_dir "eval_images/" \
-        --tgt_prefix_mod \
-        --encode_output_path "$INFER_OUTPUT" \
-        --per_device_eval_batch_size 8 \
-        --load_pretrained_lora True \
-        --report_to None \
-        "${EXTRA_ARGS[@]}"
+    # CUDA_VISIBLE_DEVICES=0 python "$INFER_SCRIPT" \
+    #     --model_name "$MODEL" \
+    #     --lora True \
+    #     --lora_r 64 \
+    #     --lora_alpha 64 \
+    #     --pooling eos \
+    #     --model_backbone "$BACKBONE" \
+    #     --normalize False \
+    #     --bf16 \
+    #     --dataset_name "TIGER-Lab/MMEB-eval" \
+    #     --subset_name "${INFER_SUBSETS[@]}" \
+    #     --dataset_split "test" \
+    #     --image_dir "eval_images/" \
+    #     --tgt_prefix_mod \
+    #     --encode_output_path "$INFER_OUTPUT" \
+    #     --per_device_eval_batch_size 8 \
+    #     --load_pretrained_lora True \
+    #     --report_to None \
+    #     "${EXTRA_ARGS[@]}"
 
     if [ $? -ne 0 ]; then
         echo "ERROR: Infer failed for $EXP_NAME"
         continue
     fi
 
+    PT_DIRS=()
+    for SUBSET in "${INFER_SUBSETS[@]}"; do
+        PT_DIRS+=("${INFER_OUTPUT}/${SUBSET}/query")
+        PT_DIRS+=("${INFER_OUTPUT}/${SUBSET}/target")
+    done
+
     CUDA_VISIBLE_DEVICES=0 python distribution_visualize.py \
-        --pt_dir "${INFER_OUTPUT}/${INFER_SUBSETS[0]}/query" \
+        --pt_dir "${PT_DIRS[@]}" \
         --num_samples 0 \
         --plot_dir "${PROJECTION_OUTPUT}"
     

@@ -1,17 +1,17 @@
 SUBSETS=(
-#   "ImageNet-1K" "N24News" "HatefulMemes" "VOC2007" "SUN397" 
-#   "Place365" "ImageNet-A" "ImageNet-R" "ObjectNet" "Country211"
+  "ImageNet-1K" "N24News" "HatefulMemes" "VOC2007" "SUN397" 
+  "Place365" "ImageNet-A" "ImageNet-R" "ObjectNet" "Country211"
 #   "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W"
 #   "ScienceQA" "VizWiz" "GQA" "TextVQA"
-  "MSCOCO" "RefCOCO" "RefCOCO-Matching" "Visual7W-Pointing"
+  # "MSCOCO" "RefCOCO" "RefCOCO-Matching" "Visual7W-Pointing"
 )
 
 # MODEL=training/FastVLM-0.5B_base_16_eos_cls/checkpoint-final
 # MODEL=training/FastVLM-0.5B_vqa_struct_sigreg_SW_gmm_d1_sig1_kd10_sw0.1_numt17_tmax5_l24/checkpoint-final
-MODEL=training/FastVLM-0.5B_grounding_struct_sigreg_SW_gmm_d1_sig1_kd10_sw0.1_numt17_tmax5_l24/checkpoint-final
+MODEL=training/b8_FastVLM-0.5B_cls_struct_sigreg_SW_gmm_d1_sig0_kd10_sw0.1_numt17_tmax5_l24/checkpoint-epoch-0
 
-BASE_BATCH=16
-OUT_ROOT=./MMEB-eval_outputs/FastVLM-0.5B_grounding_struct_sigreg_SW_gmm_d1_sig1_kd10_sw0.1_numt17_tmax5_l24
+BASE_BATCH=8
+OUT_ROOT=./MMEB-eval_outputs/b8_FastVLM-0.5B_cls_struct_sigreg_SW_gmm_d1_sig0_kd10_sw0.1_numt17_tmax5_l24
 
 for i in 0 1 2; do
   BATCH=$((BASE_BATCH - i))

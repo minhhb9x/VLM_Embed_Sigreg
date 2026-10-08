@@ -7,6 +7,7 @@ import math
 import matplotlib
 matplotlib.use("Agg")  # Chạy trên server không có màn hình
 import matplotlib.pyplot as plt
+import numpy as np
 
 # def compute_effective_rank(
 #     hidden_state: torch.Tensor,
@@ -83,37 +84,37 @@ def extract_text_tokens(obj: dict, hidden_state: torch.Tensor, image_slice: slic
     )
 
 
-def load_hidden_layers(
-    pt_path: str,
-    normalize: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[None, None, None]:
-    obj = torch.load(pt_path, map_location="cpu")
+# def load_hidden_layers(
+#     pt_path: str,
+#     normalize: bool = False,
+# ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[None, None, None]:
+#     obj = torch.load(pt_path, map_location="cpu")
 
-    num_image_tokens = int(obj.get("num_image_tokens", 0))
-    if num_image_tokens <= 0:
-        return None, None, None
+#     num_image_tokens = int(obj.get("num_image_tokens", 0))
+#     if num_image_tokens <= 0:
+#         return None, None, None
 
-    hidden_state = obj["hidden_state"].float()
-    image_slice = get_image_token_slice(obj, hidden_state)
+#     hidden_state = obj["hidden_state"].float()
+#     image_slice = get_image_token_slice(obj, hidden_state)
 
-    image_hidden_layers = hidden_state[:, image_slice, :]
-    text_hidden_layers = extract_text_tokens(obj, hidden_state, image_slice)
+#     image_hidden_layers = hidden_state[:, image_slice, :]
+#     text_hidden_layers = extract_text_tokens(obj, hidden_state, image_slice)
 
-    if image_hidden_layers.size(1) != num_image_tokens:
-        raise ValueError(
-            f"Extracted {image_hidden_layers.size(1)} image tokens from {pt_path}, "
-            f"expected {num_image_tokens}."
-        )
+#     if image_hidden_layers.size(1) != num_image_tokens:
+#         raise ValueError(
+#             f"Extracted {image_hidden_layers.size(1)} image tokens from {pt_path}, "
+#             f"expected {num_image_tokens}."
+#         )
 
-    if text_hidden_layers.size(1) <= 0:
-        raise ValueError(f"No text tokens extracted from {pt_path}.")
+#     if text_hidden_layers.size(1) <= 0:
+#         raise ValueError(f"No text tokens extracted from {pt_path}.")
 
-    if normalize:
-        image_hidden_layers = F.normalize(image_hidden_layers, p=2, dim=-1)
-        text_hidden_layers = F.normalize(text_hidden_layers, p=2, dim=-1)
+#     if normalize:
+#         image_hidden_layers = F.normalize(image_hidden_layers, p=2, dim=-1)
+#         text_hidden_layers = F.normalize(text_hidden_layers, p=2, dim=-1)
 
-    last_token_all_layers = hidden_state[:, -1, :].clone()
-    return image_hidden_layers, text_hidden_layers, last_token_all_layers
+#     last_token_all_layers = hidden_state[:, -1, :].clone()
+#     return image_hidden_layers, text_hidden_layers, last_token_all_layers
 
 
 
@@ -137,68 +138,70 @@ def get_pt_files(pt_dir: str, num_samples: int) -> list[str]:
 
     return pt_files
 
+def make_label(pt_dir: str) -> str:
+    """Tạo nhãn ngắn từ 2 thành phần cuối của đường dẫn (vd: ImageNet-1K/query)."""
+    parts = os.path.normpath(pt_dir).split(os.sep)
+    return "/".join(parts[-2:])
+
+
+def load_last_token_samples(pt_dir: str, num_samples: int, normalize: bool) -> torch.Tensor:
+    """Trả về tensor [num_samples, num_layers, hidden_dim] cho một thư mục."""
+    pt_files = get_pt_files(pt_dir=pt_dir, num_samples=num_samples)
+    print(f"\n[{pt_dir}] Found {len(pt_files)} .pt files to process.")
+
+    samples = []
+    for file_idx, pt_path in enumerate(pt_files):
+        print(f"[{file_idx + 1}/{len(pt_files)}] Loading {os.path.basename(pt_path)}")
+        obj = torch.load(pt_path, map_location="cpu")
+        hidden_state = obj["hidden_state"].float()      # [L, T, D]
+        last_token_all_layers = hidden_state[:, -1, :]  # [L, D]
+        if normalize:
+            last_token_all_layers = F.normalize(last_token_all_layers, p=2, dim=-1)
+        samples.append(last_token_all_layers.clone())
+
+    return torch.stack(samples, dim=0).cpu()
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pt_dir", default="infer/rkd_meta_cls/ImageNet-1K/query")
-    parser.add_argument("--num_samples", type=int, default=0, help="Number of first .pt files to use. Use <= 0 to process all files.")
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--normalize", action="store_true", help="L2-normalize image/text tokens along hidden dimension before eRank.")
     parser.add_argument(
-        "--normalize_by_min_dim",
-        action="store_true",
-        help="Divide effective rank by min(n, d). If omitted, return raw effective rank.",
+        "--pt_dir",
+        nargs="+",  # nhận 1 hoặc nhiều thư mục
+        default=["infer/rkd_meta_cls/ImageNet-1K/query"],
+        help="One or more directories containing .pt files.",
     )
+    parser.add_argument("--num_samples", type=int, default=0, help="Number of first .pt files to use PER directory. Use <= 0 to process all files.")
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--normalize", action="store_true", help="L2-normalize image/text tokens along hidden dimension.")
     parser.add_argument("--num_projections", type=int, default=16)
     parser.add_argument("--plot_dir", type=str, default="projection_plots")
     parser.add_argument("--plot_seed", type=int, default=42)
-    parser.add_argument("--plot_bins", type=int, default=30)
+    parser.add_argument("--plot_bins", type=int, default=256)
     args = parser.parse_args()
-    device = torch.device(args.device)
 
-    image_per_sample_eranks = []
-    text_per_sample_eranks = []
-    image_hidden_samples = []
-    text_hidden_samples = []
-    last_token_all_layers_samples = []
-    loaded_files = []
+    # ----- Load từng thư mục rồi gộp lại thành một tập -----
+    datasets = [
+        load_last_token_samples(pt_dir, args.num_samples, args.normalize)
+        for pt_dir in args.pt_dir
+    ]
 
-    pt_files = get_pt_files(pt_dir=args.pt_dir, num_samples=args.num_samples)
+    n_layers, hidden_dim = datasets[0].shape[1:]
+    for pt_dir, s in zip(args.pt_dir, datasets):
+        if s.shape[1:] != (n_layers, hidden_dim):
+            raise ValueError(
+                f"Shape mismatch: {pt_dir} has (layers, dim)={tuple(s.shape[1:])}, "
+                f"expected {(n_layers, hidden_dim)}."
+            )
+        print(f"{pt_dir}: {tuple(s.shape)}")
 
-    print(f"Found {len(pt_files)} .pt files to process.")
-    print(f"Effective-rank normalization: {'min(n, d)' if args.normalize_by_min_dim else 'none'}")
-    print("First files:")
-    for pt_path in pt_files[:10]:
-        print(f"  {os.path.basename(pt_path)}")
-    if len(pt_files) > 10:
-        print("  ...")
+    samples = torch.cat(datasets, dim=0)  # [N_total, L, D]
+    n_samples = samples.shape[0]
+    print(f"Total samples: {n_samples}")
 
-    for file_idx, pt_path in enumerate(pt_files):
-        print(f"[{file_idx + 1}/{len(pt_files)}] Loading {os.path.basename(pt_path)}")
-
-        image_hidden_layers, text_hidden_layers, last_token_all_layers = load_hidden_layers(
-            pt_path,
-            normalize=args.normalize,
-        )
-
-        # take the last token all layers
-        last_token_all_layers_samples.append(last_token_all_layers) # [num_samples, num_layers, hidden_dim]
-
-    last_token_all_layers_samples = torch.stack(last_token_all_layers_samples, dim=0) # [num_samples, num_layers, hidden_dim]
-
-    print(last_token_all_layers_samples.shape)
-
-    samples = last_token_all_layers_samples.float().cpu()
-    n_samples, n_layers, hidden_dim = samples.shape
     m_projections = args.num_projections
-
     os.makedirs(args.plot_dir, exist_ok=True)
 
-    # Một bộ hướng cố định, dùng chung cho mọi layer.
     generator = torch.Generator().manual_seed(args.plot_seed)
-    directions = torch.randn(
-        hidden_dim, m_projections, generator=generator
-    )
+    directions = torch.randn(hidden_dim, m_projections, generator=generator)
     directions = F.normalize(directions, p=2, dim=0)  # [D, M]
 
     ncols = min(4, m_projections)
@@ -227,7 +230,6 @@ def main():
                 density=True,
                 alpha=0.65,
                 color="steelblue",
-                label="Embedding",
             )
 
             # Đường chuẩn tham chiếu N(0, 1).
@@ -251,11 +253,10 @@ def main():
             ax.set_xlabel("Projected value")
             ax.set_ylabel("Density")
 
-        axes[0, 0].legend(fontsize=8)
         fig.suptitle(
             f"Layer {layer_idx} | {n_samples} samples | "
             f"{m_projections} projections",
-            fontsize=14,
+            fontsize=15,
         )
         fig.tight_layout()
 
